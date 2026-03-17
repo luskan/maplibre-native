@@ -28,6 +28,7 @@ CustomGeometryTile::CustomGeometryTile(const OverscaledTileID& overscaledTileID,
       actorRef(*this, mailbox) {}
 
 CustomGeometryTile::~CustomGeometryTile() {
+    mailbox->close();  // Prevent messages from being delivered to destroyed tile (UAF fix)
     loader.invoke(&style::CustomTileLoader::removeTile, id);
 }
 
@@ -61,7 +62,9 @@ void CustomGeometryTile::setNecessity(TileNecessity newNecessity) {
     if (newNecessity != necessity || stale) {
         necessity = newNecessity;
         if (necessity == TileNecessity::Required) {
-            loader.invoke(&style::CustomTileLoader::fetchTile, id, actorRef);
+            if (stale || !isRenderable()) {
+                loader.invoke(&style::CustomTileLoader::fetchTile, id, actorRef);
+            }
             stale = false;
         } else if (!isRenderable()) {
             loader.invoke(&style::CustomTileLoader::cancelTile, id);
