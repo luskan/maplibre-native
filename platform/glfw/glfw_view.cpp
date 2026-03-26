@@ -985,6 +985,54 @@ void GLFWView::makeSnapshot(bool withOverlay) {
     }
 }
 
+void GLFWView::captureFramebuffer(const std::string& filename) {
+    MLN_TRACE_FUNC();
+
+#if MLN_RENDER_BACKEND_OPENGL
+    // Get framebuffer size (may be different from window size due to pixel ratio)
+    int fbWidth, fbHeight;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+
+    // Create image buffer
+    mln::PremultipliedImage image({static_cast<uint32_t>(fbWidth), static_cast<uint32_t>(fbHeight)});
+
+    // Read pixels from front buffer (after swap, content is in front buffer)
+    glReadBuffer(GL_FRONT);
+    glReadPixels(0, 0, fbWidth, fbHeight, GL_RGBA, GL_UNSIGNED_BYTE, image.data.get());
+    glReadBuffer(GL_BACK);  // Restore default
+
+    // Flip image vertically (OpenGL has origin at bottom-left, PNG at top-left)
+    const size_t rowBytes = fbWidth * 4;
+    std::vector<uint8_t> rowBuffer(rowBytes);
+    for (int y = 0; y < fbHeight / 2; y++) {
+        uint8_t* top = image.data.get() + y * rowBytes;
+        uint8_t* bottom = image.data.get() + (fbHeight - 1 - y) * rowBytes;
+        std::memcpy(rowBuffer.data(), top, rowBytes);
+        std::memcpy(top, bottom, rowBytes);
+        std::memcpy(bottom, rowBuffer.data(), rowBytes);
+    }
+
+    // Write to file
+    std::ofstream file(filename, std::ios::binary);
+    if (file) {
+        file << mln::encodePNG(image);
+        std::ostringstream oss;
+        oss << "Captured framebuffer to '" << filename << "' with size w:" << fbWidth << "px h:" << fbHeight << "px";
+        mln::Log::Info(mln::Event::General, oss.str());
+    } else {
+        mln::Log::Error(mln::Event::General, "Failed to open file for writing: " + filename);
+    }
+#else
+    mln::Log::Warning(mln::Event::General, "Framebuffer capture only supported with OpenGL backend");
+#endif
+
+    // Auto-snapshot mode: exit after capture
+    if (autoSnapshotMode) {
+        mln::Log::Info(mln::Event::General, "Snapshot complete, exiting...");
+        setShouldClose();
+    }
+}
+
 void GLFWView::onScroll(GLFWwindow *window, double /*xOffset*/, double yOffset) {
     MLN_TRACE_FUNC();
 
@@ -1171,6 +1219,15 @@ void GLFWView::onWindowRefresh(GLFWwindow *window) {
 #endif
 
 void GLFWView::render() {
+    static int renderCallCount = 0;
+    renderCallCount++;
+
+    if (autoSnapshotMode && renderCallCount <= 5) {
+        mln::Log::Info(mln::Event::General, "render() called #" + std::to_string(renderCallCount) +
+                        ", dirty=" + std::to_string(dirty) +
+                        ", rendererFrontend=" + std::to_string(rendererFrontend != nullptr));
+    }
+
     if (dirty && rendererFrontend) {
         MLN_TRACE_ZONE(ReRender);
 
@@ -1188,6 +1245,13 @@ void GLFWView::render() {
         mln::gfx::BackendScope scope{backend->getRendererBackend()};
 
         rendererFrontend->render();
+
+        // Check for fallback capture request (timer-triggered)
+        if (autoSnapshotMode && fallbackCaptureRequested && !firstRenderDone) {
+            firstRenderDone = true;
+            mln::Log::Info(mln::Event::General, "Capturing framebuffer from render (fallback)...");
+            captureFramebuffer("./snapshot.png");
+        }
 
         if (freeCameraDemoPhase >= 0.0) {
             updateFreeCameraDemo();
@@ -1235,6 +1299,19 @@ void GLFWView::run() {
         tickDuration = mln::Milliseconds(1);
     }
     frameTick.start(mln::Duration::zero(), tickDuration, callback);
+
+    // Auto-snapshot mode: set up fallback timer in case callbacks don't fire
+    if (autoSnapshotMode) {
+        mln::Log::Info(mln::Event::General, "Starting 10-second fallback timer for auto-snapshot...");
+        autoSnapshotTimer.start(std::chrono::seconds(10), mln::Duration::zero(), [this]() {
+            if (!firstRenderDone) {
+                mln::Log::Info(mln::Event::General, "Fallback timer triggered: requesting capture on next render...");
+                fallbackCaptureRequested = true;
+                invalidate();  // Trigger a render cycle
+            }
+        });
+    }
+
 #if defined(__APPLE__)
     while (!glfwWindowShouldClose(window)) runLoop.run();
 #else
@@ -1302,6 +1379,32 @@ void GLFWView::onDidFinishLoadingStyle() {
 
     if (show3DExtrusions) {
         toggle3DExtrusions(show3DExtrusions);
+    }
+
+    // Auto-snapshot mode: log that style is loaded
+    if (autoSnapshotMode) {
+        mln::Log::Info(mln::Event::General, "Style loaded, waiting for tiles to load...");
+    }
+}
+
+void GLFWView::onDidBecomeIdle() {
+    MLN_TRACE_FUNC();
+
+    // Auto-snapshot mode: mark ready to capture on next full render
+    if (autoSnapshotMode && !readyToCapture) {
+        readyToCapture = true;
+        mln::Log::Info(mln::Event::General, "Map idle, tiles loaded, will capture on next render...");
+    }
+}
+
+void GLFWView::onDidFinishRenderingFrame(const RenderFrameStatus& status) {
+    MLN_TRACE_FUNC();
+
+    // Auto-snapshot mode: capture framebuffer after first full render when ready
+    if (autoSnapshotMode && readyToCapture && !firstRenderDone && status.mode == RenderMode::Full) {
+        firstRenderDone = true;
+        mln::Log::Info(mln::Event::General, "Frame rendered, capturing framebuffer...");
+        captureFramebuffer("./snapshot.png");
     }
 }
 
