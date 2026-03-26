@@ -62,6 +62,11 @@ public:
 
     void setWindowTitle(const std::string &);
 
+    void setAutoSnapshotMode(bool enable) { autoSnapshotMode = enable; }
+
+    // Capture framebuffer to PNG (made public for timer-based auto-snapshot)
+    void captureFramebuffer(const std::string& filename);
+
     void run();
 
     void invalidate();
@@ -71,6 +76,8 @@ public:
     // mbgl::MapObserver implementation
     void onDidFinishLoadingStyle() override;
     void onWillStartRenderingFrame() override;
+    void onDidBecomeIdle() override;
+    void onDidFinishRenderingFrame(const RenderFrameStatus&) override;
 
 protected:
     // mbgl::Backend implementation
@@ -162,6 +169,7 @@ private:
 
     mbgl::util::RunLoop runLoop;
     mbgl::util::Timer frameTick;
+    mbgl::util::Timer autoSnapshotTimer;  // Fallback timer for auto-snapshot mode
 
     GLFWwindow *window = nullptr;
     bool dirty = false;
@@ -170,6 +178,10 @@ private:
     std::unique_ptr<SnapshotObserver> snapshotterObserver;
     mbgl::ResourceOptions mapResourceOptions;
     mbgl::ClientOptions mapClientOptions;
+    bool autoSnapshotMode = false;
+    bool firstRenderDone = false;
+    bool readyToCapture = false;
+    bool fallbackCaptureRequested = false;  // Timer-triggered capture flag
 
 #ifdef ENABLE_LOCATION_INDICATOR
     bool puckFollowsCameraCenter = false;
