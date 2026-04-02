@@ -6,6 +6,8 @@
 #include <mbgl/util/geojson.hpp>
 #include <mbgl/actor/mailbox.hpp>
 
+#include <memory>
+
 namespace mbgl {
 
 class TileParameters;
@@ -16,6 +18,9 @@ class CustomTileLoader;
 
 class CustomGeometryTile : public GeometryTile {
 public:
+    using TileFeatureCollection = mapbox::feature::feature_collection<int16_t>;
+    using TileFeatureCollectionPtr = std::shared_ptr<const TileFeatureCollection>;
+
     CustomGeometryTile(const OverscaledTileID&,
                        std::string,
                        const TileParameters&,
@@ -24,7 +29,15 @@ public:
                        TileObserver* observer = nullptr);
     ~CustomGeometryTile() override;
 
+    static TileFeatureCollectionPtr processTileData(const GeoJSON&,
+                                                    const CanonicalTileID&,
+                                                    const style::CustomGeometrySource::TileOptions&);
+    static TileFeatureCollectionPtr processTileData(const FeatureCollection&,
+                                                    const CanonicalTileID&,
+                                                    const style::CustomGeometrySource::TileOptions&);
+
     void setTileData(const GeoJSON& geoJSON);
+    void setTileData(TileFeatureCollectionPtr featureData);
     void invalidateTileData();
 
     void setNecessity(TileNecessity) final;

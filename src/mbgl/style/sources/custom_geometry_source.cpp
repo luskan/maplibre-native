@@ -17,7 +17,7 @@ namespace style {
 CustomGeometrySource::CustomGeometrySource(std::string id, const CustomGeometrySource::Options& options)
     : Source(makeMutable<CustomGeometrySource::Impl>(std::move(id), options)),
       loader(std::make_unique<Actor<CustomTileLoader>>(
-          Scheduler::GetBackground(), options.fetchTileFunction, options.cancelTileFunction)) {}
+          Scheduler::GetBackground(), options.fetchTileFunction, options.cancelTileFunction, options.tileOptions)) {}
 
 CustomGeometrySource::~CustomGeometrySource() = default;
 
@@ -37,6 +37,11 @@ bool CustomGeometrySource::supportsLayerType(const mbgl::style::LayerTypeInfo* i
 
 void CustomGeometrySource::setTileData(const CanonicalTileID& tileID, const GeoJSON& data) {
     loader->self().invoke(&CustomTileLoader::setTileData, tileID, data);
+}
+
+void CustomGeometrySource::setTileFeatures(const CanonicalTileID& tileID,
+                                           const std::shared_ptr<const FeatureCollection>& data) {
+    loader->self().invoke(&CustomTileLoader::setTileFeatures, tileID, data);
 }
 
 void CustomGeometrySource::invalidateTile(const CanonicalTileID& tileID) {

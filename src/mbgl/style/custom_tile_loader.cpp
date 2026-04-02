@@ -5,7 +5,18 @@
 namespace mbgl {
 namespace style {
 
-CustomTileLoader::CustomTileLoader(const TileFunction& fetchTileFn, const TileFunction& cancelTileFn) {
+namespace {
+
+constexpr auto kSetProcessedTileData =
+    static_cast<void (CustomGeometryTile::*)(CustomGeometryTile::TileFeatureCollectionPtr)>(
+        &CustomGeometryTile::setTileData);
+
+} // namespace
+
+CustomTileLoader::CustomTileLoader(const TileFunction& fetchTileFn,
+                                   const TileFunction& cancelTileFn,
+                                   const CustomGeometrySource::TileOptions& tileOptions_)
+    : tileOptions(tileOptions_) {
     fetchTileFunction = fetchTileFn;
     cancelTileFunction = cancelTileFn;
 }
@@ -14,7 +25,7 @@ void CustomTileLoader::fetchTile(const OverscaledTileID& tileID, const ActorRef<
     std::lock_guard<std::mutex> guard(dataMutex);
     auto cachedTileData = dataCache.find(tileID.canonical);
     if (cachedTileData != dataCache.end()) {
-        tileRef.invoke(&CustomGeometryTile::setTileData, *(cachedTileData->second));
+        tileRef.invoke(kSetProcessedTileData, cachedTileData->second);
     }
     auto tileCallbacks = tileCallbackMap.find(tileID.canonical);
     if (tileCallbacks == tileCallbackMap.end()) {
@@ -59,15 +70,30 @@ void CustomTileLoader::removeTile(const OverscaledTileID& tileID) {
 }
 
 void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON& data) {
+    auto featureData = CustomGeometryTile::processTileData(data, tileID, tileOptions);
     std::lock_guard<std::mutex> guard(dataMutex);
     auto iter = tileCallbackMap.find(tileID);
-    if (iter == tileCallbackMap.end()) return;
-    auto dataPtr = std::make_unique<mapbox::geojson::geojson>(data);
-    for (auto tuple : iter->second) {
-        auto actor = std::get<2>(tuple);
-        actor.invoke(&CustomGeometryTile::setTileData, *dataPtr);
+    if (iter != tileCallbackMap.end()) {
+        for (const auto& tuple : iter->second) {
+            auto actor = std::get<2>(tuple);
+            actor.invoke(kSetProcessedTileData, featureData);
+        }
     }
-    dataCache[tileID] = std::move(dataPtr);
+    dataCache[tileID] = std::move(featureData);
+}
+
+void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::shared_ptr<const FeatureCollection> data) {
+    auto featureData = data ? CustomGeometryTile::processTileData(*data, tileID, tileOptions)
+                            : std::make_shared<const TileFeatureCollection>();
+    std::lock_guard<std::mutex> guard(dataMutex);
+    auto iter = tileCallbackMap.find(tileID);
+    if (iter != tileCallbackMap.end()) {
+        for (const auto& tuple : iter->second) {
+            auto actor = std::get<2>(tuple);
+            actor.invoke(kSetProcessedTileData, featureData);
+        }
+    }
+    dataCache[tileID] = std::move(featureData);
 }
 
 void CustomTileLoader::invalidateTile(const CanonicalTileID& tileID) {

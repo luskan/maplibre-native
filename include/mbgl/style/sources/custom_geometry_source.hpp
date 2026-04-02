@@ -6,6 +6,8 @@
 #include <mbgl/util/range.hpp>
 #include <mbgl/util/constants.hpp>
 
+#include <memory>
+
 namespace mbgl {
 
 class OverscaledTileID;
@@ -43,6 +45,7 @@ public:
     ~CustomGeometrySource() final;
     void loadDescription(FileSource&) final;
     void setTileData(const CanonicalTileID&, const GeoJSON&);
+    void setTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&);
     void invalidateTile(const CanonicalTileID&);
     void invalidateRegion(const LatLngBounds&);
     // Private implementation
