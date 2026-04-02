@@ -75,7 +75,7 @@
 	url = https://github.com/mapbox/cheap-ruler-cpp.git
 [submodule "vendor/maplibre-native-base/deps/geojson-vt-cpp"]
 	path = vendor/maplibre-native-base/deps/geojson-vt-cpp
-	url = https://github.com/mapbox/geojson-vt-cpp.git
+	url = https://github.com/luskan/geojson-vt-cpp.git
 [submodule "vendor/maplibre-native-base/deps/geometry.hpp"]
 	path = vendor/maplibre-native-base/deps/geometry.hpp
 	url = https://github.com/mapbox/geometry.hpp.git
