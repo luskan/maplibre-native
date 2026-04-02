@@ -14,6 +14,25 @@
 
 namespace mln {
 
+namespace {
+
+mapbox::geojsonvt::TileOptions makeVTOptions(const style::CustomGeometrySource::TileOptions& options) {
+    auto scale = util::EXTENT / options.tileSize;
+    assert(util::EXTENT % options.tileSize == 0);
+
+    mapbox::geojsonvt::TileOptions vtOptions;
+    vtOptions.extent = util::EXTENT;
+    vtOptions.buffer = static_cast<uint16_t>(::round(scale * options.buffer));
+    vtOptions.tolerance = scale * options.tolerance;
+    return vtOptions;
+}
+
+CustomGeometryTile::TileFeatureCollectionPtr toSharedFeatureCollection(mapbox::feature::feature_collection<int16_t> features) {
+    return std::make_shared<const CustomGeometryTile::TileFeatureCollection>(std::move(features));
+}
+
+} // namespace
+
 CustomGeometryTile::CustomGeometryTile(const OverscaledTileID& overscaledTileID,
                                        std::string sourceID_,
                                        const TileParameters& parameters,
@@ -32,22 +51,51 @@ CustomGeometryTile::~CustomGeometryTile() {
     loader.invoke(&style::CustomTileLoader::removeTile, id);
 }
 
-void CustomGeometryTile::setTileData(const GeoJSON& geoJSON) {
-    auto featureData = mapbox::feature::feature_collection<int16_t>();
-    if (geoJSON.is<FeatureCollection>() && !geoJSON.get<FeatureCollection>().empty()) {
-        auto scale = util::EXTENT / options->tileSize;
-        assert(util::EXTENT % options->tileSize == 0);
-
-        mapbox::geojsonvt::TileOptions vtOptions;
-        vtOptions.extent = util::EXTENT;
-        vtOptions.buffer = static_cast<uint16_t>(::round(scale * options->buffer));
-        vtOptions.tolerance = scale * options->tolerance;
-        featureData =
-            mapbox::geojsonvt::geoJSONToTile(
-                geoJSON, id.canonical.z, id.canonical.x, id.canonical.y, vtOptions, options->wrap, options->clip)
-                .features;
+CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData(
+    const GeoJSON& geoJSON,
+    const CanonicalTileID& tileID,
+    const style::CustomGeometrySource::TileOptions& tileOptions) {
+    if (geoJSON.is<FeatureCollection>()) {
+        return processTileData(geoJSON.get<FeatureCollection>(), tileID, tileOptions);
     }
-    setData(std::make_unique<GeoJSONTileData>(std::move(featureData)));
+
+    return toSharedFeatureCollection(mapbox::geojsonvt::geoJSONToTile(
+                                         geoJSON,
+                                         tileID.z,
+                                         tileID.x,
+                                         tileID.y,
+                                         makeVTOptions(tileOptions),
+                                         tileOptions.wrap,
+                                         tileOptions.clip)
+                                         .features);
+}
+
+CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData(
+    const FeatureCollection& features,
+    const CanonicalTileID& tileID,
+    const style::CustomGeometrySource::TileOptions& tileOptions) {
+    if (features.empty()) {
+        return std::make_shared<const TileFeatureCollection>();
+    }
+
+    return toSharedFeatureCollection(mapbox::geojsonvt::geoJSONToTile(
+                                         features,
+                                         tileID.z,
+                                         tileID.x,
+                                         tileID.y,
+                                         makeVTOptions(tileOptions),
+                                         tileOptions.wrap,
+                                         tileOptions.clip)
+                                         .features);
+}
+
+void CustomGeometryTile::setTileData(const GeoJSON& geoJSON) {
+    setTileData(processTileData(geoJSON, id.canonical, *options));
+}
+
+void CustomGeometryTile::setTileData(TileFeatureCollectionPtr featureData) {
+    setData(std::make_unique<GeoJSONTileData>(
+        featureData ? std::move(featureData) : std::make_shared<const TileFeatureCollection>()));
 }
 
 void CustomGeometryTile::invalidateTileData() {
