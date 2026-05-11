@@ -91,6 +91,8 @@ public:
     // Pitch
 
     double getPitch() const;
+    void setHighPitchProjection(bool);
+    bool getHighPitchProjection() const;
 
     // North Orientation
     void setNorthOrientation(NorthOrientation);

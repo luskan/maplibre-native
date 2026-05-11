@@ -916,7 +916,7 @@ TEST(Transform, MinMaxPitch) {
     transform.setMaxPitch(70);
     transform.jumpTo(CameraOptions().withPitch(70));
     ASSERT_DOUBLE_EQ(transform.getState().getMaxPitch(), transform.getPitch());
-    ASSERT_DOUBLE_EQ(util::deg2rad(60), transform.getPitch());
+    ASSERT_DOUBLE_EQ(util::deg2rad(70), transform.getPitch());
 
     transform.setMaxPitch(45);
     transform.jumpTo(CameraOptions().withPitch(60));
@@ -1083,7 +1083,7 @@ TEST(Transform, FreeCameraOptionsClampPitch) {
 
     options.orientation = Quaternion::fromAxisAngle(vec3{{1.0, 0.0, 0.0}}, util::deg2rad(-85.0)).m;
     transform.setFreeCameraOptions(options);
-    EXPECT_DOUBLE_EQ(util::PITCH_MAX, transform.getState().getPitch());
+    EXPECT_DOUBLE_EQ(util::PITCH_DEFAULT, transform.getState().getPitch());
     std::tie(right, up, forward) = rotatedFrame(transform.getFreeCameraOptions().orientation.value());
     EXPECT_THAT(right, Vec3NearEquals1E5(vec3{{1.0, 0.0, 0.0}}));
     EXPECT_THAT(up, Vec3NearEquals1E5(vec3{{0, -0.5, 0.866025}}));

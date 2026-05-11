@@ -176,6 +176,8 @@ public:
     float getCameraToCenterDistance() const;
     double getPitch() const;
     void setPitch(double);
+    bool getHighPitchProjection() const;
+    void setHighPitchProjection(bool);
 
     double getXSkew() const;
     void setXSkew(double);
@@ -240,7 +242,7 @@ private:
 
     // Limit the amount of pitch
     double minPitch = util::PITCH_MIN;
-    double maxPitch = util::PITCH_MAX;
+    double maxPitch = util::PITCH_DEFAULT;
 
     NorthOrientation orientation = NorthOrientation::Upwards;
 
@@ -286,6 +288,7 @@ private:
     double xSkew = 0.0;
     double ySkew = 1.0;
     bool axonometric = false;
+    bool highPitchProjection = false;
 
     EdgeInsets edgeInsets;
     mutable util::Camera camera;

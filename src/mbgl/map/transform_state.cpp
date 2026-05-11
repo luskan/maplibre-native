@@ -9,6 +9,7 @@
 #include <mbgl/util/projection.hpp>
 #include <mbgl/util/tile_coordinate.hpp>
 
+#include <algorithm>
 #include <numbers>
 
 using namespace std::numbers;
@@ -120,11 +121,15 @@ void TransformState::getProjMatrix(mat4& projMatrix, uint16_t nearZ, bool aligne
     // (the distance between[width/2, height/2] and [width/2 + 1, height/2])
     // See https://github.com/mapbox/mapbox-gl-native/pull/15195 for details.
     // See TransformState::fov description: fov = 2 * arctan((height / 2) / (height * 1.5)).
-    const double tanFovAboveCenter = (size.height * 0.5 + offset.y) / (size.height * 1.5);
+    const double tanFovAboveCenter = (size.height * 0.5 + offset.y) / cameraToCenterDistance;
     const double tanMultiple = tanFovAboveCenter * std::tan(getPitch());
-    assert(tanMultiple < 1);
+    assert(highPitchProjection || tanMultiple < 1);
     // Calculate z distance of the farthest fragment that should be rendered.
-    const double furthestDistance = cameraToCenterDistance / (1 - tanMultiple);
+    const double furthestDistance = tanMultiple < 1
+                                        ? cameraToCenterDistance / (1 - tanMultiple)
+                                        : std::max(cameraToCenterDistance * 8.0,
+                                                   cameraToCenterDistance +
+                                                       (size.height * 0.5 + offset.y) * std::tan(getPitch()) * 1.35);
     // Add a bit extra to avoid precision problems when a fragment's distance is exactly `furthestDistance`
     const double farZ = furthestDistance * 1.01;
 
@@ -603,6 +608,17 @@ double TransformState::getPitch() const {
 void TransformState::setPitch(double val) {
     if (pitch != val) {
         pitch = val;
+        requestMatricesUpdate = true;
+    }
+}
+
+bool TransformState::getHighPitchProjection() const {
+    return highPitchProjection;
+}
+
+void TransformState::setHighPitchProjection(bool val) {
+    if (highPitchProjection != val) {
+        highPitchProjection = val;
         requestMatricesUpdate = true;
     }
 }
