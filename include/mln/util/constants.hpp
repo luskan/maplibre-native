@@ -33,6 +33,7 @@ constexpr double LONGITUDE_MAX = 180;
 constexpr double DEGREES_MAX = 360;
 constexpr double PITCH_MIN = 0.0;
 constexpr double DEFAULT_PITCH_MAX = M_PI / 3;
+constexpr double PITCH_DEFAULT = DEFAULT_PITCH_MAX;
 constexpr double PITCH_MAX = M_PI;
 // This fov value is somewhat arbitrary. The altitude of the camera used
 // to be defined as 1.5 screen heights above the ground, which was an

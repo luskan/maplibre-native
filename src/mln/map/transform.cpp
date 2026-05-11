@@ -524,6 +524,14 @@ double Transform::getFieldOfView() const {
     return state.getFieldOfView();
 }
 
+void Transform::setHighPitchProjection(bool enabled) {
+    state.setHighPitchProjection(enabled);
+}
+
+bool Transform::getHighPitchProjection() const {
+    return state.getHighPitchProjection();
+}
+
 // MARK: - North Orientation
 
 void Transform::setNorthOrientation(NorthOrientation orientation) {
@@ -729,6 +737,10 @@ LatLng Transform::screenCoordinateToLatLng(const ScreenCoordinate& point, LatLng
 }
 
 double Transform::getMaxPitchForEdgeInsets(const EdgeInsets& insets) const {
+    if (state.getHighPitchProjection()) {
+        return state.getMaxPitch();
+    }
+
     double centerOffsetY = 0.5 * (insets.top() - insets.bottom()); // See TransformState::getCenterOffset.
     if (centerOffsetY == 0.0) {
         return state.getMaxPitch();

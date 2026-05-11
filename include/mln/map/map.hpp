@@ -163,6 +163,9 @@ public:
     void setFreeCameraOptions(const FreeCameraOptions& camera);
     FreeCameraOptions getFreeCameraOptions() const;
 
+    void setHighPitchProjection(bool enabled);
+    bool getHighPitchProjection() const;
+
     // Tile LOD controls
     //
     /// The number of map tile requests can be reduced by using a lower level

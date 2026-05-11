@@ -942,6 +942,7 @@ TEST(Transform, MinMaxPitch) {
     transform.setMaxPitch(70);
     transform.jumpTo(CameraOptions().withPitch(70));
     ASSERT_DOUBLE_EQ(transform.getState().getMaxPitch(), transform.getPitch());
+    ASSERT_DOUBLE_EQ(util::deg2rad(70), transform.getPitch());
 
     transform.setMaxPitch(45);
     transform.jumpTo(CameraOptions().withPitch(60));
@@ -1136,6 +1137,21 @@ static std::tuple<vec3, vec3, vec3> rotatedFrame(const std::array<double, 4>& qu
     Quaternion q(quaternion);
     return std::make_tuple(
         q.transform({{1.0, 0.0, 0.0}}), q.transform({{0.0, -1.0, 0.0}}), q.transform({{0.0, 0.0, -1.0}}));
+}
+
+TEST(Transform, FreeCameraOptionsClampPitch) {
+    Transform transform;
+    transform.resize({100, 100});
+    FreeCameraOptions options;
+    vec3 right, up, forward;
+
+    options.orientation = Quaternion::fromAxisAngle(vec3{{1.0, 0.0, 0.0}}, util::deg2rad(-85.0)).m;
+    transform.setFreeCameraOptions(options);
+    EXPECT_DOUBLE_EQ(util::PITCH_DEFAULT, transform.getState().getPitch());
+    std::tie(right, up, forward) = rotatedFrame(transform.getFreeCameraOptions().orientation.value());
+    EXPECT_THAT(right, Vec3NearEquals1E5(vec3{{1.0, 0.0, 0.0}}));
+    EXPECT_THAT(up, Vec3NearEquals1E5(vec3{{0, -0.5, 0.866025}}));
+    EXPECT_THAT(forward, Vec3NearEquals1E5(vec3{{0, -0.866025, -0.5}}));
 }
 
 TEST(Transform, FreeCameraOptionsClampToBounds) {

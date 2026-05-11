@@ -556,6 +556,16 @@ FreeCameraOptions Map::getFreeCameraOptions() const {
     return impl->transform.getFreeCameraOptions();
 }
 
+void Map::setHighPitchProjection(bool enabled) {
+    impl->transform.setHighPitchProjection(enabled);
+    impl->cameraMutated = true;
+    impl->onUpdate();
+}
+
+bool Map::getHighPitchProjection() const {
+    return impl->transform.getHighPitchProjection();
+}
+
 void Map::setTileLodMinRadius(double radius) {
     impl->tileLodMinRadius = radius;
 }

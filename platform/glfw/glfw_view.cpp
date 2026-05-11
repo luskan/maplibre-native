@@ -631,7 +631,7 @@ void GLFWView::onKey(GLFWwindow *window, int key, int /*scancode*/, int action, 
             case GLFW_KEY_U: {
                 auto bounds = view->map->getBounds();
                 if (bounds.minPitch == mln::util::rad2deg(mln::util::PITCH_MIN) &&
-                    bounds.maxPitch == mln::util::rad2deg(mln::util::PITCH_MAX)) {
+                    bounds.maxPitch == mln::util::rad2deg(mln::util::PITCH_DEFAULT)) {
                     mln::Log::Info(mln::Event::General, "Limiting pitch bounds to [30, 40] degrees");
                     view->map->setBounds(mln::BoundOptions().withMinPitch(30).withMaxPitch(40));
                 } else {

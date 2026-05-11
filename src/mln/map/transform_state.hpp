@@ -207,6 +207,8 @@ public:
     void setPitch(double);
     double getRoll() const;
     void setRoll(double);
+    bool getHighPitchProjection() const;
+    void setHighPitchProjection(bool);
 
     double getXSkew() const;
     void setXSkew(double);
@@ -272,7 +274,7 @@ private:
 
     // Limit the amount of pitch
     double minPitch = util::PITCH_MIN;
-    double maxPitch = util::DEFAULT_PITCH_MAX;
+    double maxPitch = util::PITCH_DEFAULT;
     double minFov = util::deg2rad(0.1);
     double maxFov = util::deg2rad(150.0);
 
@@ -318,6 +320,7 @@ private:
     double xSkew = 0.0;
     double ySkew = 1.0;
     bool axonometric = false;
+    bool highPitchProjection = false;
 
     EdgeInsets edgeInsets;
     mutable util::Camera camera;

@@ -93,6 +93,8 @@ public:
     double getPitch() const;
     double getRoll() const;
     double getFieldOfView() const;
+    void setHighPitchProjection(bool);
+    bool getHighPitchProjection() const;
 
     // North Orientation
     void setNorthOrientation(NorthOrientation);
