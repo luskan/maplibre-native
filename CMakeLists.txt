@@ -132,6 +132,12 @@ else()
     add_library(mbgl-core STATIC)
 endif()
 
+option(AM_MAPLIBRE_RUNTIME_PITCH_LIMIT "Read MapLibre maximum pitch from runtime configuration" ON)
+target_compile_definitions(
+    mbgl-core
+    PUBLIC AM_MAPLIBRE_RUNTIME_PITCH_LIMIT=$<BOOL:${AM_MAPLIBRE_RUNTIME_PITCH_LIMIT}>
+)
+
 # Override visibility for mbgl-core when building amalgamation
 if(MLN_CREATE_AMALGAMATION)
     target_compile_options(mbgl-core PRIVATE
@@ -432,6 +438,7 @@ list(APPEND INCLUDE_FILES
     ${PROJECT_SOURCE_DIR}/include/mln/util/noncopyable.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/padding.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/platform.hpp
+    ${PROJECT_SOURCE_DIR}/include/mln/util/pitch_limits.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/premultiply.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/projection.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/range.hpp
@@ -548,6 +555,7 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mln/map/zoom_history.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/math/log2.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/platform/settings.cpp
+    ${PROJECT_SOURCE_DIR}/src/mln/util/pitch_limits.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/backend_scope.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/bucket.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/bucket_parameters.cpp

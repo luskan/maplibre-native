@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mln/util/chrono.hpp>
+#include <mln/util/pitch_limits.hpp>
 #include <mln/util/unitbezier.hpp>
 
 #include <cmath>

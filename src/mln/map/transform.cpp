@@ -468,9 +468,14 @@ void Transform::setMinPitch(const double minPitch) {
 
 void Transform::setMaxPitch(const double maxPitch) {
     if (std::isnan(maxPitch)) return;
-    if (util::deg2rad(maxPitch) > util::PITCH_MAX) {
+#if AM_MAPLIBRE_RUNTIME_PITCH_LIMIT
+    double const maxPitchLimit = util::maxPitchRadians();
+#else
+    double const maxPitchLimit = util::PITCH_MAX;
+#endif
+    if (util::deg2rad(maxPitch) > maxPitchLimit) {
         Log::Warning(Event::General,
-                     "Trying to set maximum pitch above the limit (" + std::to_string(util::rad2deg(util::PITCH_MAX)) +
+                     "Trying to set maximum pitch above the limit (" + std::to_string(util::rad2deg(maxPitchLimit)) +
                          " degrees), the value will be clamped.");
     }
     state.setMaxPitch(util::deg2rad(maxPitch));
