@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mbgl/util/chrono.hpp>
+#include <mbgl/util/pitch_limits.hpp>
 #include <mbgl/util/unitbezier.hpp>
 
 #include <cmath>
@@ -33,7 +34,11 @@ constexpr double LONGITUDE_MAX = 180;
 constexpr double DEGREES_MAX = 360;
 constexpr double PITCH_MIN = 0.0;
 constexpr double PITCH_DEFAULT = M_PI / 3;
-constexpr double PITCH_MAX = M_PI * 83.0 / 180.0;
+#if AM_MAPLIBRE_RUNTIME_PITCH_LIMIT
+inline const double PITCH_MAX = maxPitchRadians();
+#else
+constexpr double PITCH_MAX = maxPitchRadians();
+#endif
 constexpr double MIN_ZOOM = 0.0;
 constexpr double MAX_ZOOM = 25.5;
 constexpr float MIN_ZOOM_F = MIN_ZOOM;

@@ -532,7 +532,7 @@ double TransformState::getMinPitch() const {
 
 void TransformState::setMaxPitch(const double pitch_) {
     if (pitch_ >= minPitch) {
-        maxPitch = util::clamp(pitch_, minPitch, util::PITCH_MAX);
+        maxPitch = util::clamp(pitch_, minPitch, util::maxPitchRadians());
     } else {
         Log::Warning(Event::General,
                      "Trying to set maximum pitch to smaller than minimum pitch, no "

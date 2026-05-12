@@ -137,6 +137,12 @@ else()
     add_library(mbgl-core STATIC)
 endif()
 
+option(AM_MAPLIBRE_RUNTIME_PITCH_LIMIT "Read MapLibre maximum pitch from runtime configuration" ON)
+target_compile_definitions(
+    mbgl-core
+    PUBLIC AM_MAPLIBRE_RUNTIME_PITCH_LIMIT=$<BOOL:${AM_MAPLIBRE_RUNTIME_PITCH_LIMIT}>
+)
+
 list(APPEND INCLUDE_FILES
     ${PROJECT_SOURCE_DIR}/include/mbgl/gfx/context.hpp
     ${PROJECT_SOURCE_DIR}/include/mbgl/gfx/drawable.hpp
@@ -422,6 +428,7 @@ list(APPEND INCLUDE_FILES
     ${PROJECT_SOURCE_DIR}/include/mbgl/util/noncopyable.hpp
     ${PROJECT_SOURCE_DIR}/include/mbgl/util/padding.hpp
     ${PROJECT_SOURCE_DIR}/include/mbgl/util/platform.hpp
+    ${PROJECT_SOURCE_DIR}/include/mbgl/util/pitch_limits.hpp
     ${PROJECT_SOURCE_DIR}/include/mbgl/util/premultiply.hpp
     ${PROJECT_SOURCE_DIR}/include/mbgl/util/projection.hpp
     ${PROJECT_SOURCE_DIR}/include/mbgl/util/range.hpp
@@ -536,6 +543,7 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mbgl/map/zoom_history.hpp
     ${PROJECT_SOURCE_DIR}/src/mbgl/math/log2.cpp
     ${PROJECT_SOURCE_DIR}/src/mbgl/platform/settings.cpp
+    ${PROJECT_SOURCE_DIR}/src/mbgl/util/pitch_limits.cpp
     ${PROJECT_SOURCE_DIR}/src/mbgl/renderer/backend_scope.cpp
     ${PROJECT_SOURCE_DIR}/src/mbgl/renderer/bucket.hpp
     ${PROJECT_SOURCE_DIR}/src/mbgl/renderer/bucket_parameters.cpp
