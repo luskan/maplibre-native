@@ -10,7 +10,7 @@ namespace mbgl {
 namespace util {
 
 constexpr double defaultMaxPitchDegrees() noexcept {
-    return 83.0;
+    return 70.0;
 }
 
 #if AM_MAPLIBRE_RUNTIME_PITCH_LIMIT
