@@ -473,6 +473,14 @@ bool Transform::getHighPitchProjection() const {
     return state.getHighPitchProjection();
 }
 
+void Transform::setMaxGroundViewDistanceMeters(double meters) {
+    state.setMaxGroundViewDistanceMeters(meters);
+}
+
+double Transform::getMaxGroundViewDistanceMeters() const {
+    return state.getMaxGroundViewDistanceMeters();
+}
+
 // MARK: - North Orientation
 
 void Transform::setNorthOrientation(NorthOrientation orientation) {

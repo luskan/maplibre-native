@@ -10,6 +10,7 @@
 #include <mbgl/util/tile_coordinate.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <numbers>
 
 using namespace std::numbers;
@@ -125,11 +126,25 @@ void TransformState::getProjMatrix(mat4& projMatrix, uint16_t nearZ, bool aligne
     const double tanMultiple = tanFovAboveCenter * std::tan(getPitch());
     assert(highPitchProjection || tanMultiple < 1);
     // Calculate z distance of the farthest fragment that should be rendered.
-    const double furthestDistance = tanMultiple < 1
-                                        ? cameraToCenterDistance / (1 - tanMultiple)
-                                        : std::max(cameraToCenterDistance * 8.0,
-                                                   cameraToCenterDistance +
-                                                       (size.height * 0.5 + offset.y) * std::tan(getPitch()) * 1.35);
+    double furthestDistance = tanMultiple < 1
+                                  ? cameraToCenterDistance / (1 - tanMultiple)
+                                  : std::max(cameraToCenterDistance * 8.0,
+                                             cameraToCenterDistance +
+                                                 (size.height * 0.5 + offset.y) * std::tan(getPitch()) * 1.35);
+
+    if (maxGroundViewDistanceMeters > 0.0) {
+        const double metersPerPixel = Projection::getMetersPerPixelAtLatitude(getLatLng().latitude(), getZoom());
+        if (std::isfinite(metersPerPixel) && metersPerPixel > 0.0) {
+            // The cap is measured from the camera target along the look direction
+            // on the ground plane. Convert that ground distance into camera-Z
+            // distance so rendering and tile-cover frustums stay identical.
+            const double groundDistancePixels = maxGroundViewDistanceMeters / metersPerPixel;
+            const double cappedDistance =
+                cameraToCenterDistance + groundDistancePixels * std::max(0.0, std::sin(getPitch()));
+            furthestDistance = std::min(furthestDistance, std::max(cameraToCenterDistance, cappedDistance));
+        }
+    }
+
     // Add a bit extra to avoid precision problems when a fragment's distance is exactly `furthestDistance`
     const double farZ = furthestDistance * 1.01;
 
@@ -619,6 +634,18 @@ bool TransformState::getHighPitchProjection() const {
 void TransformState::setHighPitchProjection(bool val) {
     if (highPitchProjection != val) {
         highPitchProjection = val;
+        requestMatricesUpdate = true;
+    }
+}
+
+double TransformState::getMaxGroundViewDistanceMeters() const {
+    return maxGroundViewDistanceMeters;
+}
+
+void TransformState::setMaxGroundViewDistanceMeters(double val) {
+    const double sanitized = std::isfinite(val) && val > 0.0 ? val : 0.0;
+    if (maxGroundViewDistanceMeters != sanitized) {
+        maxGroundViewDistanceMeters = sanitized;
         requestMatricesUpdate = true;
     }
 }

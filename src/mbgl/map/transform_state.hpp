@@ -178,6 +178,8 @@ public:
     void setPitch(double);
     bool getHighPitchProjection() const;
     void setHighPitchProjection(bool);
+    double getMaxGroundViewDistanceMeters() const;
+    void setMaxGroundViewDistanceMeters(double);
 
     double getXSkew() const;
     void setXSkew(double);
@@ -289,6 +291,7 @@ private:
     double ySkew = 1.0;
     bool axonometric = false;
     bool highPitchProjection = false;
+    double maxGroundViewDistanceMeters = 0.0;
 
     EdgeInsets edgeInsets;
     mutable util::Camera camera;
