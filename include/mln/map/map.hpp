@@ -165,6 +165,8 @@ public:
 
     void setHighPitchProjection(bool enabled);
     bool getHighPitchProjection() const;
+    void setMaxGroundViewDistanceMeters(double meters);
+    double getMaxGroundViewDistanceMeters() const;
 
     // Tile LOD controls
     //

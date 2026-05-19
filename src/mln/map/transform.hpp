@@ -95,6 +95,8 @@ public:
     double getFieldOfView() const;
     void setHighPitchProjection(bool);
     bool getHighPitchProjection() const;
+    void setMaxGroundViewDistanceMeters(double);
+    double getMaxGroundViewDistanceMeters() const;
 
     // North Orientation
     void setNorthOrientation(NorthOrientation);

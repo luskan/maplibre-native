@@ -566,6 +566,16 @@ bool Map::getHighPitchProjection() const {
     return impl->transform.getHighPitchProjection();
 }
 
+void Map::setMaxGroundViewDistanceMeters(double meters) {
+    impl->transform.setMaxGroundViewDistanceMeters(meters);
+    impl->cameraMutated = true;
+    impl->onUpdate();
+}
+
+double Map::getMaxGroundViewDistanceMeters() const {
+    return impl->transform.getMaxGroundViewDistanceMeters();
+}
+
 void Map::setTileLodMinRadius(double radius) {
     impl->tileLodMinRadius = radius;
 }
