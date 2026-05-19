@@ -650,6 +650,58 @@ void TransformState::setMaxGroundViewDistanceMeters(double val) {
     }
 }
 
+double TransformState::getMaxGroundViewDistanceScreenY() const {
+    if (maxGroundViewDistanceMeters <= 0.0 || size.isEmpty() || axonometric || getPitch() <= 0.0) {
+        return -1.0;
+    }
+
+    const LatLng target = getLatLng(LatLng::Unwrapped);
+    if (!std::isfinite(target.latitude()) || !std::isfinite(target.longitude())) {
+        return -1.0;
+    }
+
+    const double metersPerPixel = Projection::getMetersPerPixelAtLatitude(target.latitude(), getZoom());
+    if (!std::isfinite(metersPerPixel) || metersPerPixel <= 0.0) {
+        return -1.0;
+    }
+
+    const double distancePixels = maxGroundViewDistanceMeters / metersPerPixel;
+    if (!std::isfinite(distancePixels) || distancePixels <= 0.0) {
+        return -1.0;
+    }
+
+    updateCameraState();
+    const vec3 forward = camera.forward();
+    const double forwardLen = std::hypot(forward[0], forward[1]);
+    if (!std::isfinite(forwardLen) || forwardLen <= 0.0) {
+        return -1.0;
+    }
+
+    const Point<double> centerWorld = Projection::project(target, scale);
+    const Point<double> cutoffWorld = {
+        centerWorld.x + (forward[0] / forwardLen) * distancePixels,
+        centerWorld.y + (forward[1] / forwardLen) * distancePixels,
+    };
+
+    const Point<double> cutoffTile = cutoffWorld / util::tileSize_D;
+    const vec4 cutoff = {{cutoffTile.x, cutoffTile.y, 0.0, 1.0}};
+    vec4 projected;
+    matrix::transformMat4(projected, cutoff, getCoordMatrix());
+
+    const double w = projected[3];
+    if (!std::isfinite(w) || w == 0.0) {
+        return -1.0;
+    }
+
+    // coordinatePointMatrix already maps to top-origin screen pixels.
+    const double screenY = projected[1] / w;
+    if (!std::isfinite(screenY) || screenY < 0.0 || screenY > size.height) {
+        return -1.0;
+    }
+
+    return screenY;
+}
+
 double TransformState::getXSkew() const {
     return xSkew;
 }

@@ -25,6 +25,7 @@ private:
     bool hasCrossfade() const override;
     void markContextDestroyed() override;
     void prepare(const LayerPrepareParameters&) override;
+    void render(PaintParameters&) override;
 
     bool contextDestroyed = false;
     std::shared_ptr<style::CustomLayerHost> host;

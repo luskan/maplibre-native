@@ -22,6 +22,8 @@ struct CustomLayerRenderParameters {
     double bearing;
     double pitch;
     double fieldOfView;
+    double maxGroundViewDistanceMeters;
+    double maxGroundViewDistanceScreenY;
     std::array<double, 16> projectionMatrix;
 
     CustomLayerRenderParameters(const PaintParameters&);

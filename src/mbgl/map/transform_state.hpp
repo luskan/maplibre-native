@@ -180,6 +180,7 @@ public:
     void setHighPitchProjection(bool);
     double getMaxGroundViewDistanceMeters() const;
     void setMaxGroundViewDistanceMeters(double);
+    double getMaxGroundViewDistanceScreenY() const;
 
     double getXSkew() const;
     void setXSkew(double);

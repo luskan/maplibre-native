@@ -15,6 +15,8 @@ CustomLayerRenderParameters::CustomLayerRenderParameters(const mbgl::PaintParame
     bearing = util::rad2deg(-state.getBearing());
     pitch = state.getPitch();
     fieldOfView = state.getFieldOfView();
+    maxGroundViewDistanceMeters = state.getMaxGroundViewDistanceMeters();
+    maxGroundViewDistanceScreenY = state.getMaxGroundViewDistanceScreenY();
     mat4 projMatrix;
     state.getProjMatrix(projMatrix);
     projectionMatrix = projMatrix;

@@ -1,6 +1,9 @@
 #include <mbgl/gfx/backend_scope.hpp>
+#include <mbgl/gfx/context.hpp>
+#include <mbgl/gfx/renderable.hpp>
 #include <mbgl/gfx/renderer_backend.hpp>
 #include <mbgl/style/layers/custom_layer_impl.hpp>
+#include <mbgl/style/layers/custom_layer_render_parameters.hpp>
 #include <mbgl/renderer/layers/render_custom_layer.hpp>
 #include <mbgl/map/transform_state.hpp>
 #include <mbgl/math/angles.hpp>
@@ -8,10 +11,10 @@
 #include <mbgl/renderer/paint_parameters.hpp>
 #include <mbgl/util/mat4.hpp>
 
-#include <mbgl/gfx/context.hpp>
-#include <mbgl/renderer/layer_group.hpp>
-#include <mbgl/gfx/drawable_custom_layer_host_tweaker.hpp>
-#include <mbgl/gfx/drawable_builder.hpp>
+#if MLN_RENDER_BACKEND_METAL
+#include <mbgl/mtl/render_pass.hpp>
+#include <mbgl/style/layers/mtl/custom_layer_render_parameters.hpp>
+#endif
 
 // TODO: platform agnostic error checks
 #define MBGL_CHECK_ERROR(cmd) (cmd)
@@ -64,19 +67,16 @@ void RenderCustomLayer::markContextDestroyed() {
 void RenderCustomLayer::prepare(const LayerPrepareParameters&) {}
 
 void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
-                               gfx::Context& context,
+                               [[maybe_unused]] gfx::Context& context,
                                [[maybe_unused]] const TransformState& state,
                                const std::shared_ptr<UpdateParameters>&,
                                [[maybe_unused]] const RenderTree& renderTree,
-                               [[maybe_unused]] UniqueChangeRequestVec& changes) {
-    // create layer group
-    if (!layerGroup) {
-        if (auto layerGroup_ = context.createLayerGroup(layerIndex, /*initialCapacity=*/1, getID())) {
-            setLayerGroup(std::move(layerGroup_), changes);
-        }
+                               UniqueChangeRequestVec& changes) {
+    if (layerGroup) {
+        removeAllDrawables();
+        activateLayerGroup(layerGroup, false, changes);
+        layerGroup.reset();
     }
-
-    auto* localLayerGroup = static_cast<LayerGroup*>(layerGroup.get());
 
     // check if host changed and update
     bool hostChanged = (host != impl(baseImpl).host);
@@ -88,27 +88,30 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
         host = impl(baseImpl).host;
         MBGL_CHECK_ERROR(host->initialize());
     }
+}
 
-    // create drawable
-    if (localLayerGroup->getDrawableCount() == 0 || hostChanged) {
-        localLayerGroup->clearDrawables();
+void RenderCustomLayer::render(PaintParameters& paintParameters) {
+    auto& context = paintParameters.context;
+    context.resetState(paintParameters.depthModeForSublayer(0, gfx::DepthMaskType::ReadOnly),
+                       paintParameters.colorModeForRenderPass());
 
-        // create tweaker
-        auto tweaker = std::make_shared<gfx::DrawableCustomLayerHostTweaker>(host);
+#if MLN_RENDER_BACKEND_METAL
+    const auto& mtlRenderPass = static_cast<mtl::RenderPass*>(paintParameters.renderPass.get());
+    mtlRenderPass->resetState();
 
-        // create empty drawable using a builder
-        std::unique_ptr<gfx::DrawableBuilder> builder = context.createDrawableBuilder(getID());
-        auto& drawable = builder->getCurrentDrawable(true);
-        drawable->setIsCustom(true);
-        drawable->setRenderPass(RenderPass::Translucent);
+    style::mtl::CustomLayerRenderParameters parameters(paintParameters);
+#else
+    style::CustomLayerRenderParameters parameters(paintParameters);
+#endif
 
-        // assign tweaker to drawable
-        drawable->addTweaker(tweaker);
+    host->render(parameters);
 
-        // add drawable to layer group
-        localLayerGroup->addDrawable(std::move(drawable));
-        ++stats.drawablesAdded;
-    }
+    // Reset the view back to our original one, just in case the CustomLayer
+    // changed the viewport or framebuffer.
+    paintParameters.backend.getDefaultRenderable().getResource<gfx::RenderableResource>().bind();
+
+    context.setDirtyState();
+    context.bindGlobalUniformBuffers(*paintParameters.renderPass);
 }
 
 } // namespace mbgl
