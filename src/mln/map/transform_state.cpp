@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 using namespace std::numbers;
@@ -750,30 +751,34 @@ void TransformState::setMaxGroundViewDistanceMeters(double val) {
 }
 
 double TransformState::getMaxGroundViewDistanceScreenY() const {
+    auto invalidScreenY = [] {
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
     if (maxGroundViewDistanceMeters <= 0.0 || size.isEmpty() || axonometric || getPitch() <= 0.0) {
-        return -1.0;
+        return invalidScreenY();
     }
 
     const LatLng target = getLatLng(LatLng::Unwrapped);
     if (!std::isfinite(target.latitude()) || !std::isfinite(target.longitude())) {
-        return -1.0;
+        return invalidScreenY();
     }
 
     const double metersPerPixel = Projection::getMetersPerPixelAtLatitude(target.latitude(), getZoom());
     if (!std::isfinite(metersPerPixel) || metersPerPixel <= 0.0) {
-        return -1.0;
+        return invalidScreenY();
     }
 
     const double distancePixels = maxGroundViewDistanceMeters / metersPerPixel;
     if (!std::isfinite(distancePixels) || distancePixels <= 0.0) {
-        return -1.0;
+        return invalidScreenY();
     }
 
     updateCameraState();
     const vec3 forward = camera.forward();
     const double forwardLen = std::hypot(forward[0], forward[1]);
     if (!std::isfinite(forwardLen) || forwardLen <= 0.0) {
-        return -1.0;
+        return invalidScreenY();
     }
 
     const Point<double> centerWorld = Projection::project(target, scale);
@@ -789,13 +794,13 @@ double TransformState::getMaxGroundViewDistanceScreenY() const {
 
     const double w = projected[3];
     if (!std::isfinite(w) || w == 0.0) {
-        return -1.0;
+        return invalidScreenY();
     }
 
     // coordinatePointMatrix already maps to top-origin screen pixels.
     const double screenY = projected[1] / w;
-    if (!std::isfinite(screenY) || screenY < 0.0 || screenY > size.height) {
-        return -1.0;
+    if (!std::isfinite(screenY) || screenY > size.height) {
+        return invalidScreenY();
     }
 
     return screenY;
