@@ -17,6 +17,7 @@ constexpr double defaultMaxPitchDegrees() noexcept {
 
 double maxPitchDegrees() noexcept;
 double maxPitchRadians() noexcept;
+void setMaxPitchDegrees(double degrees) noexcept;
 
 #else
 
@@ -27,6 +28,8 @@ constexpr double maxPitchDegrees() noexcept {
 constexpr double maxPitchRadians() noexcept {
     return deg2rad(maxPitchDegrees());
 }
+
+inline void setMaxPitchDegrees(double) noexcept {}
 
 #endif
 

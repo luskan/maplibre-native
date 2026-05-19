@@ -3,6 +3,7 @@
 #if AM_MAPLIBRE_RUNTIME_PITCH_LIMIT
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 
@@ -53,15 +54,26 @@ double loadRuntimeMaxPitchDegrees() noexcept {
     return defaultMaxPitchDegrees();
 }
 
+std::atomic<double>& runtimeMaxPitchDegrees() noexcept {
+    static std::atomic<double> value{loadRuntimeMaxPitchDegrees()};
+    return value;
+}
+
 } // namespace
 
 double maxPitchDegrees() noexcept {
-    static double const value = loadRuntimeMaxPitchDegrees();
-    return value;
+    return runtimeMaxPitchDegrees().load(std::memory_order_relaxed);
 }
 
 double maxPitchRadians() noexcept {
     return deg2rad(maxPitchDegrees());
+}
+
+void setMaxPitchDegrees(double degrees) noexcept {
+    if (!std::isfinite(degrees)) {
+        return;
+    }
+    runtimeMaxPitchDegrees().store(std::clamp(degrees, 0.0, 89.0), std::memory_order_relaxed);
 }
 
 } // namespace util
