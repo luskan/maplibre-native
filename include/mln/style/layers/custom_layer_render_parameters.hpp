@@ -22,6 +22,8 @@ struct CustomLayerRenderParameters {
     double bearing;
     double pitch;
     double fieldOfView;
+    double maxGroundViewDistanceMeters;
+    double maxGroundViewDistanceScreenY;
 
     /// Standard projection matrix (nearZ = 1 tile unit).
     /// Use this for 2D/flat custom geometry.

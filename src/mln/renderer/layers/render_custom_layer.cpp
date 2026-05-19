@@ -1,4 +1,6 @@
 #include <mln/gfx/backend_scope.hpp>
+#include <mln/gfx/renderable.hpp>
+#include <mln/style/layers/custom_layer_render_parameters.hpp>
 #include <mln/gfx/renderer_backend.hpp>
 #include <mln/style/layers/custom_layer_impl.hpp>
 #include <mln/renderer/layers/render_custom_layer.hpp>
@@ -109,6 +111,13 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
                                [[maybe_unused]] const PaintParameters& paintParameters,
                                [[maybe_unused]] const RenderTree& renderTree,
                                [[maybe_unused]] UniqueChangeRequestVec& changes) {
+#if MLN_RENDER_BACKEND_OPENGL
+    if (layerGroup) {
+        removeAllDrawables();
+        activateLayerGroup(layerGroup, false, changes);
+        layerGroup.reset();
+    }
+#else
     // create layer group
     if (!layerGroup) {
         if (auto layerGroup_ = context.createLayerGroup(layerIndex, /*initialCapacity=*/1, getID())) {
@@ -117,6 +126,8 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
     }
 
     auto* localLayerGroup = static_cast<LayerGroup*>(layerGroup.get());
+
+#endif
 
     // check if host changed and update
     bool hostChanged = (host != impl(baseImpl).host);
@@ -137,6 +148,7 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
     // call the pre-render
     MBGL_CHECK_ERROR(callPreRender(host, context, paintParameters));
 
+#if !MLN_RENDER_BACKEND_OPENGL
     // create drawable
     if (localLayerGroup->getDrawableCount() == 0 || hostChanged) {
         localLayerGroup->clearDrawables();
@@ -157,6 +169,23 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
         localLayerGroup->addDrawable(std::move(drawable));
         ++stats.drawablesAdded;
     }
+#endif
+}
+
+void RenderCustomLayer::render([[maybe_unused]] PaintParameters& paintParameters) {
+#if MLN_RENDER_BACKEND_OPENGL
+    auto& context = paintParameters.context;
+    context.resetState(paintParameters.depthModeForSublayer(0, gfx::DepthMaskType::ReadOnly),
+                       paintParameters.colorModeForRenderPass());
+
+    style::CustomLayerRenderParameters parameters(paintParameters);
+    host->render(parameters);
+
+    // Restore the default framebuffer and viewport after the custom host.
+    paintParameters.backend.getDefaultRenderable().getResource<gfx::RenderableResource>().bind();
+    context.setDirtyState();
+    context.bindGlobalUniformBuffers(*paintParameters.renderPass);
+#endif
 }
 
 } // namespace mln
