@@ -12,6 +12,7 @@
 #include <mbgl/util/feature.hpp>
 #include <mbgl/util/range.hpp>
 
+#include <cstddef>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -85,6 +86,8 @@ private:
 
     bool fadingTiles = false;
     bool cacheEnabled = true;
+    bool diagnosticSelfTestLogged = false;
+    std::size_t coverageGapLogCount = 0;
 };
 
 } // namespace mbgl

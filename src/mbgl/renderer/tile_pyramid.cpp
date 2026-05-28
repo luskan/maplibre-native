@@ -15,8 +15,10 @@
 
 #include <mapbox/geometry/envelope.hpp>
 
+#include <array>
 #include <cmath>
 #include <algorithm>
+#include <string>
 
 namespace mbgl {
 
@@ -25,6 +27,138 @@ using namespace style;
 namespace {
 TileObserver nullObserver;
 const std::map<OverscaledTileID, std::unique_ptr<Tile>> emptyPrefetchedTiles;
+
+bool shouldLogTileDiagnostic(size_t count) {
+    return count > 0 && (count <= 50 || (count % 100) == 0);
+}
+
+bool isAutomapaDiagnosticSource(const std::string& sourceID) {
+    return sourceID.rfind("automapa-", 0) == 0;
+}
+
+std::string boolDigit(bool value) {
+    return value ? "1" : "0";
+}
+
+std::string tileState(const Tile* tile) {
+    if (!tile) {
+        return "missing";
+    }
+
+    return "renderable=" + boolDigit(tile->isRenderable()) + ",loaded=" + boolDigit(tile->isLoaded()) +
+           ",complete=" + boolDigit(tile->isComplete()) + ",pending=" + boolDigit(tile->isPending()) +
+           ",triedCache=" + boolDigit(tile->hasTriedCache());
+}
+
+char tileStateCode(const Tile* tile) {
+    if (!tile) {
+        return 'M';
+    }
+    if (tile->isRenderable()) {
+        return 'R';
+    }
+    if (tile->isPending()) {
+        return 'P';
+    }
+    if (tile->isLoaded()) {
+        return 'L';
+    }
+    if (tile->hasTriedCache()) {
+        return 'T';
+    }
+    return 'N';
+}
+
+struct CoverageDiagnostics {
+    bool covered = false;
+    bool exact = false;
+    bool parent = false;
+    size_t childSlots = 0;
+    size_t descendants = 0;
+};
+
+CoverageDiagnostics coverageForIdeal(
+    const UnwrappedTileID& idealTile,
+    const std::map<UnwrappedTileID, std::reference_wrapper<Tile>>& renderedTiles) {
+    CoverageDiagnostics out;
+    std::array<bool, 4> coveredChildren{{false, false, false, false}};
+    const auto idealChildren = idealTile.children();
+
+    for (const auto& entry : renderedTiles) {
+        const auto& renderedTile = entry.first;
+        if (renderedTile.wrap != idealTile.wrap) {
+            continue;
+        }
+
+        if (renderedTile == idealTile) {
+            out.exact = true;
+            out.covered = true;
+            continue;
+        }
+
+        if (idealTile.isChildOf(renderedTile)) {
+            out.parent = true;
+            out.covered = true;
+            continue;
+        }
+
+        if (renderedTile.isChildOf(idealTile)) {
+            ++out.descendants;
+            const auto childAtNextZoom = renderedTile.canonical.scaledTo(idealTile.canonical.z + 1);
+            for (size_t i = 0; i < idealChildren.size(); ++i) {
+                if (idealChildren[i].canonical == childAtNextZoom) {
+                    coveredChildren[i] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (bool childCovered : coveredChildren) {
+        if (childCovered) {
+            ++out.childSlots;
+        }
+    }
+
+    out.covered = out.covered || out.childSlots == coveredChildren.size();
+    return out;
+}
+
+std::string childStateSummary(const OverscaledTileID& idealTile,
+                              const std::map<OverscaledTileID, std::unique_ptr<Tile>>& tiles,
+                              Range<uint8_t> zoomRange) {
+    if (idealTile.overscaledZ >= zoomRange.max) {
+        return "n/a";
+    }
+
+    std::string result;
+    const uint8_t childOverscaledZ = idealTile.overscaledZ + 1;
+    const auto children = idealTile.canonical.children();
+    for (size_t i = 0; i < children.size(); ++i) {
+        const OverscaledTileID childID(childOverscaledZ, idealTile.wrap, children[i]);
+        const auto it = tiles.find(childID);
+        if (!result.empty()) {
+            result += ",";
+        }
+        result += std::to_string(i);
+        result += ":";
+        result += tileStateCode(it == tiles.end() ? nullptr : it->second.get());
+    }
+    return result;
+}
+
+std::pair<std::string, std::string> nearestParentState(const OverscaledTileID& idealTile,
+                                                       const std::map<OverscaledTileID, std::unique_ptr<Tile>>& tiles,
+                                                       Range<uint8_t> zoomRange) {
+    for (int32_t z = static_cast<int32_t>(idealTile.overscaledZ) - 1; z >= zoomRange.min; --z) {
+        const auto parentID = idealTile.scaledTo(static_cast<uint8_t>(z));
+        const auto it = tiles.find(parentID);
+        if (it != tiles.end()) {
+            return {util::toString(parentID), tileState(it->second.get())};
+        }
+    }
+    return {"none", "missing"};
+}
 } // namespace
 
 TilePyramid::TilePyramid(const TaggedScheduler& threadPool_)
@@ -235,6 +369,56 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
         }
     }
 
+    const bool logAutomapaDiagnostics = isAutomapaDiagnosticSource(sourceImpl.id);
+    if (!diagnosticSelfTestLogged) {
+        diagnosticSelfTestLogged = true;
+        Log::Warning(Event::General,
+                     "[MLTileDiag] reason=self-test source=" + sourceImpl.id + " zoom=" + std::to_string(zoom) +
+                         " coverZ=" + std::to_string(overscaledZoom) + " tileZ=" + std::to_string(tileZoom) +
+                         " idealTiles=" + std::to_string(idealTiles.size()) +
+                         " renderedTiles=" + std::to_string(renderedTiles.size()) +
+                         " activeTiles=" + std::to_string(tiles.size()) +
+                         " layers=" + std::to_string(layers.size()));
+    }
+    if (logAutomapaDiagnostics) {
+        for (const auto& idealTile : idealTiles) {
+            const auto idealRenderTile = idealTile.toUnwrapped();
+            const auto coverage = coverageForIdeal(idealRenderTile, renderedTiles);
+            if (coverage.covered) {
+                continue;
+            }
+
+            const auto count = ++coverageGapLogCount;
+            if (!shouldLogTileDiagnostic(count)) {
+                continue;
+            }
+
+            const auto idealIt = tiles.find(idealTile);
+            const auto parent = nearestParentState(idealTile, tiles, zoomRange);
+            const std::string reason = coverage.descendants > 0 ? "partial-child-coverage" : "no-rendered-coverage";
+            Log::Warning(Event::General,
+                         "[MLTileGap] source=" + sourceImpl.id + " reason=" + reason + " count=" +
+                             std::to_string(count) + " zoom=" + std::to_string(zoom) +
+                             " coverZ=" + std::to_string(overscaledZoom) +
+                             " tileZ=" + std::to_string(tileZoom) + " idealData=" + util::toString(idealTile) +
+                             " idealRender=" + util::toString(idealRenderTile) +
+                             " idealState=" + tileState(idealIt == tiles.end() ? nullptr : idealIt->second.get()) +
+                             " parent=" + parent.first + " parentState=" + parent.second +
+                             " children=" + childStateSummary(idealTile, tiles, zoomRange) +
+                             " childSlots=" + std::to_string(coverage.childSlots) + "/4" +
+                             " descendants=" + std::to_string(coverage.descendants) +
+                             " renderedTiles=" + std::to_string(renderedTiles.size()) +
+                             " activeTiles=" + std::to_string(tiles.size()) +
+                             " retained=" + std::to_string(retain.size()) +
+                             " idealTiles=" + std::to_string(idealTiles.size()) +
+                             " panTiles=" + std::to_string(panTiles.size()) +
+                             " mode=" + std::to_string(static_cast<int>(parameters.mode)) +
+                             " minZ=" + std::to_string(zoomRange.min) + " maxZ=" + std::to_string(zoomRange.max) +
+                             " maxParent=" +
+                             (maxParentTileOverscaleFactor ? std::to_string(*maxParentTileOverscaleFactor) : "none"));
+        }
+    }
+
     if (type != SourceType::Annotations && cacheEnabled) {
         auto conservativeCacheSize = static_cast<size_t>(
             std::max(static_cast<double>(parameters.transformState.getSize().width) / tileSize, 1.0) *
@@ -290,6 +474,20 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
                 continue;
             }
             tile.usedByRenderedLayers |= tile.layerPropertiesUpdated(layerProperties);
+        }
+
+        if (logAutomapaDiagnostics && !tile.usedByRenderedLayers) {
+            const auto count = ++coverageGapLogCount;
+            if (shouldLogTileDiagnostic(count)) {
+                Log::Warning(Event::General,
+                             "[MLTileGap] source=" + sourceImpl.id + " reason=rendered-tile-no-layer-data count=" +
+                                 std::to_string(count) + " tile=" + util::toString(tile.id) +
+                                 " renderedAs=" + util::toString(entry.first) + " state=" + tileState(&tile) +
+                                 " layers=" + std::to_string(layers.size()) +
+                                 " renderedTiles=" + std::to_string(renderedTiles.size()) +
+                                 " activeTiles=" + std::to_string(tiles.size()) +
+                                 " zoom=" + std::to_string(zoom));
+            }
         }
     }
 
