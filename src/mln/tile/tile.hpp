@@ -119,6 +119,7 @@ public:
     // renderable state. Some tiles may not be renderable, but complete, e.g.
     // when a raster tile couldn't be loaded, or parsing failed.
     bool isComplete() const { return loaded && !pending; }
+    bool isPending() const { return pending; }
 
     // "holdForFade" is used to keep tiles in the render tree after they're no
     // longer ideal tiles in order to allow symbols to fade out

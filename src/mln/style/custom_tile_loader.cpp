@@ -1,5 +1,7 @@
 #include <mln/style/custom_tile_loader.hpp>
 #include <mln/tile/custom_geometry_tile.hpp>
+#include <mln/util/logging.hpp>
+#include <mln/util/string.hpp>
 #include <mln/util/tile_range.hpp>
 
 namespace mln {
@@ -11,12 +13,22 @@ constexpr auto kSetProcessedTileData =
     static_cast<void (CustomGeometryTile::*)(CustomGeometryTile::TileFeatureCollectionPtr)>(
         &CustomGeometryTile::setTileData);
 
+bool shouldLogTileDiagnostic(size_t count) {
+    return count > 0 && (count <= 50 || (count % 100) == 0);
+}
+
+bool isAutomapaDiagnosticSource(const std::string& sourceID) {
+    return sourceID.rfind("automapa-", 0) == 0;
+}
+
 } // namespace
 
-CustomTileLoader::CustomTileLoader(const TileFunction& fetchTileFn,
+CustomTileLoader::CustomTileLoader(std::string sourceID_,
+                                   const TileFunction& fetchTileFn,
                                    const TileFunction& cancelTileFn,
                                    const CustomGeometrySource::TileOptions& tileOptions_)
-    : tileOptions(tileOptions_) {
+    : sourceID(std::move(sourceID_)),
+      tileOptions(tileOptions_) {
     fetchTileFunction = fetchTileFn;
     cancelTileFunction = cancelTileFn;
 }
@@ -83,14 +95,28 @@ void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON&
 }
 
 void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::shared_ptr<const FeatureCollection> data) {
+    const auto inputFeatureCount = data ? data->size() : 0;
     auto featureData = data ? CustomGeometryTile::processTileData(*data, tileID, tileOptions)
                             : std::make_shared<const TileFeatureCollection>();
+    const auto processedFeatureCount = featureData ? featureData->size() : 0;
     std::lock_guard<std::mutex> guard(dataMutex);
     auto iter = tileCallbackMap.find(tileID);
+    const auto callbackCount = iter != tileCallbackMap.end() ? iter->second.size() : 0;
     if (iter != tileCallbackMap.end()) {
         for (const auto& tuple : iter->second) {
             auto actor = std::get<2>(tuple);
             actor.invoke(kSetProcessedTileData, featureData);
+        }
+    } else if (isAutomapaDiagnosticSource(sourceID)) {
+        const auto count = ++noCallbackDataLogCount;
+        if (shouldLogTileDiagnostic(count)) {
+            Log::Warning(Event::General,
+                         "[MLTileData] source=" + sourceID + " reason=no-active-callback count=" +
+                             std::to_string(count) + " tile=" + util::toString(tileID) +
+                             " inputFeatures=" + std::to_string(inputFeatureCount) +
+                             " processedFeatures=" + std::to_string(processedFeatureCount) +
+                             " callbacks=" + std::to_string(callbackCount) +
+                             " cacheBefore=" + std::to_string(dataCache.size()));
         }
     }
     dataCache[tileID] = std::move(featureData);

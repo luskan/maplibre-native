@@ -15,9 +15,9 @@ namespace mln {
 namespace style {
 
 CustomGeometrySource::CustomGeometrySource(std::string id, const CustomGeometrySource::Options& options)
-    : Source(makeMutable<CustomGeometrySource::Impl>(std::move(id), options)),
+    : Source(makeMutable<CustomGeometrySource::Impl>(id, options)),
       loader(std::make_unique<Actor<CustomTileLoader>>(
-          Scheduler::GetBackground(), options.fetchTileFunction, options.cancelTileFunction, options.tileOptions)) {}
+          Scheduler::GetBackground(), id, options.fetchTileFunction, options.cancelTileFunction, options.tileOptions)) {}
 
 CustomGeometrySource::~CustomGeometrySource() = default;
 
