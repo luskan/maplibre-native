@@ -158,6 +158,19 @@ void CustomTileLoader::invalidateRegion(const LatLngBounds& bounds, Range<uint8_
     }
 }
 
+void CustomTileLoader::clearDataCache() {
+    std::lock_guard<std::mutex> guard(dataMutex);
+    for (auto& idtuple : tileCallbackMap) {
+        for (auto& iter : idtuple.second) {
+            auto actor = std::get<2>(iter);
+            actor.invoke(&CustomGeometryTile::invalidateTileData);
+            invokeTileCancel(idtuple.first);
+        }
+    }
+    tileCallbackMap.clear();
+    dataCache.clear();
+}
+
 void CustomTileLoader::invokeTileFetch(const CanonicalTileID& tileID) {
     if (fetchTileFunction != nullptr) {
         fetchTileFunction(tileID);

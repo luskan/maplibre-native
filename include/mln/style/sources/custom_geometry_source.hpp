@@ -48,6 +48,7 @@ public:
     void setTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&);
     void invalidateTile(const CanonicalTileID&);
     void invalidateRegion(const LatLngBounds&);
+    void clearTileCache();
     // Private implementation
     class Impl;
     const Impl& impl() const;

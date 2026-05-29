@@ -52,6 +52,10 @@ void CustomGeometrySource::invalidateRegion(const LatLngBounds& bounds) {
     loader->self().invoke(&CustomTileLoader::invalidateRegion, bounds, impl().getZoomRange());
 }
 
+void CustomGeometrySource::clearTileCache() {
+    loader->self().invoke(&CustomTileLoader::clearDataCache);
+}
+
 Mutable<Source::Impl> CustomGeometrySource::createMutable() const noexcept {
     return staticMutableCast<Source::Impl>(makeMutable<Impl>(impl()));
 }

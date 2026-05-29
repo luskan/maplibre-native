@@ -41,6 +41,7 @@ public:
 
     void invalidateTile(const CanonicalTileID&);
     void invalidateRegion(const LatLngBounds&, Range<uint8_t>);
+    void clearDataCache();
 
 private:
     void invokeTileFetch(const CanonicalTileID& tileID);
