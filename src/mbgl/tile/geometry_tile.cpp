@@ -201,6 +201,7 @@ GeometryTile::GeometryTile(const OverscaledTileID& id_,
              obsolete,
              parameters.mode,
              parameters.pixelRatio,
+             parameters.evaluationZoomBiasStatic,
              parameters.debugOptions & MapDebugOptions::Collision,
              parameters.dynamicTextureAtlas,
              parameters.glyphManager->getFontFaces()),
@@ -208,6 +209,7 @@ GeometryTile::GeometryTile(const OverscaledTileID& id_,
       glyphManager(parameters.glyphManager),
       imageManager(parameters.imageManager),
       mode(parameters.mode),
+      evaluationZoomBiasStatic(parameters.evaluationZoomBiasStatic),
       showCollisionBoxes(parameters.debugOptions & MapDebugOptions::Collision) {}
 
 GeometryTile::~GeometryTile() {
@@ -309,7 +311,11 @@ void GeometryTile::setLayers(const std::vector<Immutable<LayerProperties>>& laye
         assert(layerImpl.getTypeInfo()->source != LayerTypeInfo::Source::NotRequired);
         assert(layerImpl.source == sourceID);
         assert(layerImpl.visibility != VisibilityType::None);
-        if (id.overscaledZ < std::floor(layerImpl.minZoom) || id.overscaledZ >= std::ceil(layerImpl.maxZoom)) {
+        // Keep the bucket when its adjusted zoom range overlaps the layer.
+        // This prevents a visible layer from missing tile data.
+        const float biasedTileZoomMin = static_cast<float>(id.overscaledZ) + evaluationZoomBiasStatic;
+        if (biasedTileZoomMin + 1 <= std::floor(layerImpl.minZoom) ||
+            biasedTileZoomMin >= std::ceil(layerImpl.maxZoom)) {
             continue;
         }
 

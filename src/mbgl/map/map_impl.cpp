@@ -10,6 +10,9 @@
 #include <mbgl/util/action_journal_impl.hpp>
 #include <mbgl/gfx/rendering_stats.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 namespace mbgl {
 
 #if !defined(NDEBUG)
@@ -113,6 +116,18 @@ void Map::Impl::onUpdate() {
 
     transform.updateTransitions(timePoint);
 
+    if (evalZoomBiasRefLat) {
+        // Match the ground scale at the reference latitude.
+        // Ignore small changes to avoid style updates while panning.
+        constexpr double deg2rad = std::numbers::pi / 180.0;
+        const double latC = std::clamp(transform.getState().getLatLng().latitude(), -85.0, 85.0);
+        const double lat0 = std::clamp(*evalZoomBiasRefLat, -85.0, 85.0);
+        const double candidate = std::log2(std::cos(lat0 * deg2rad) / std::cos(latC * deg2rad));
+        if (std::abs(candidate - evalZoomBiasLat) > 0.01) {
+            evalZoomBiasLat = candidate;
+        }
+    }
+
     UpdateParameters params = {style->impl->isLoaded(),
                                mode,
                                pixelRatio,
@@ -132,6 +147,8 @@ void Map::Impl::onUpdate() {
                                prefetchZoomDelta,
                                bool(stillImageRequest),
                                crossSourceCollisions,
+                               static_cast<float>(evalZoomBiasStatic + evalZoomBiasLat),
+                               static_cast<float>(evalZoomBiasStatic),
                                tileLodMinRadius,
                                tileLodScale,
                                tileLodPitchThreshold,

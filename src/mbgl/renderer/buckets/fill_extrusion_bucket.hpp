@@ -26,7 +26,8 @@ public:
     FillExtrusionBucket(const PossiblyEvaluatedLayoutProperties&,
                         const std::map<std::string, Immutable<style::LayerProperties>>&,
                         float,
-                        uint32_t);
+                        uint32_t,
+                        float paintZoomBias = 0);
 
     void addFeature(const GeometryTileFeature&,
                     const GeometryCollection&,

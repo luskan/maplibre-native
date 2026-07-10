@@ -16,6 +16,7 @@ public:
                  std::unique_ptr<GeometryTileLayer> sourceLayer_)
         : sourceLayer(std::move(sourceLayer_)),
           zoom(parameters.tileID.overscaledZ),
+          paintZoomBias(parameters.evaluationZoomBiasStatic),
           mode(parameters.mode) {
         assert(!group.empty());
         auto leaderLayerProperties = staticImmutableCast<style::CircleLayerProperties>(group.front());
@@ -59,7 +60,7 @@ public:
                       const bool,
                       const bool,
                       const CanonicalTileID& canonical) override {
-        auto bucket = std::make_shared<CircleBucket>(layerPropertiesMap, mode, zoom);
+        auto bucket = std::make_shared<CircleBucket>(layerPropertiesMap, mode, zoom, paintZoomBias);
 
         for (auto& circleFeature : features) {
             const auto i = circleFeature.i;
@@ -157,6 +158,7 @@ private:
     std::list<CircleFeature> features;
 
     const float zoom;
+    const float paintZoomBias;
     const MapMode mode;
     std::string sourceLayerID;
 };

@@ -16,7 +16,8 @@ HeatmapBucket::HeatmapBucket(const BucketParameters& parameters,
         paintPropertyBinders.emplace(
             std::piecewise_construct,
             std::forward_as_tuple(layer->baseImpl->id),
-            std::forward_as_tuple(getEvaluated<HeatmapLayerProperties>(layer), parameters.tileID.overscaledZ));
+            std::forward_as_tuple(getEvaluated<HeatmapLayerProperties>(layer),
+                                  parameters.tileID.overscaledZ + parameters.evaluationZoomBiasStatic));
     }
 }
 

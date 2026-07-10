@@ -61,6 +61,7 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
     propertiesUpdated = false;
 
     const auto zoom = static_cast<float>(parameters.state.getZoom());
+    const auto zEval = zoom + parameters.evaluationZoomBias;
     const auto defPattern = mbgl::Faded<expression::Image>{.from = "", .to = ""};
     const auto fillPatternValue = evaluated.get<FillExtrusionPattern>().constantOr(defPattern);
 
@@ -123,11 +124,11 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
             .height_factor = heightFactor,
             .tile_ratio = tileRatio,
 
-            .base_t = std::get<0>(binders->get<FillExtrusionBase>()->interpolationFactor(zoom)),
-            .height_t = std::get<0>(binders->get<FillExtrusionHeight>()->interpolationFactor(zoom)),
-            .color_t = std::get<0>(binders->get<FillExtrusionColor>()->interpolationFactor(zoom)),
-            .pattern_from_t = std::get<0>(binders->get<FillExtrusionPattern>()->interpolationFactor(zoom)),
-            .pattern_to_t = std::get<0>(binders->get<FillExtrusionPattern>()->interpolationFactor(zoom)),
+            .base_t = std::get<0>(binders->get<FillExtrusionBase>()->interpolationFactor(zEval)),
+            .height_t = std::get<0>(binders->get<FillExtrusionHeight>()->interpolationFactor(zEval)),
+            .color_t = std::get<0>(binders->get<FillExtrusionColor>()->interpolationFactor(zEval)),
+            .pattern_from_t = std::get<0>(binders->get<FillExtrusionPattern>()->interpolationFactor(zEval)),
+            .pattern_to_t = std::get<0>(binders->get<FillExtrusionPattern>()->interpolationFactor(zEval)),
             .pad1 = 0
         };
 

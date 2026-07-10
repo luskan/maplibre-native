@@ -56,7 +56,8 @@ void reprojectLineLabels(gfx::VertexVector<gfx::Vertex<SymbolDynamicLayoutAttrib
                          bool keepUpright,
                          const RenderTile&,
                          const SymbolSizeBinder& sizeBinder,
-                         const TransformState&);
+                         const TransformState&,
+                         float evaluationZoomBias = 0);
 
 std::optional<std::pair<PlacedGlyph, PlacedGlyph>> placeFirstAndLastGlyph(float fontScale,
                                                                           float lineOffsetX,

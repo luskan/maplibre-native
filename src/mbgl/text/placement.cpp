@@ -76,6 +76,7 @@ public:
                      const RenderTile& renderTile_,
                      const TransformState& state_,
                      float placementZoom,
+                     float sizeEvaluationZoom,
                      CollisionGroups::CollisionGroup collisionGroup_,
                      std::optional<CollisionBoundaries> avoidEdges_ = std::nullopt)
         : bucket(bucket_),
@@ -85,8 +86,8 @@ public:
           scale(static_cast<float>(std::pow(2, placementZoom - getOverscaledID().overscaledZ))),
           pixelRatio(static_cast<float>(util::tileSize_D * getOverscaledID().overscaleFactor() / util::EXTENT)),
           collisionGroup(std::move(collisionGroup_)),
-          partiallyEvaluatedTextSize(bucket_.textSizeBinder->evaluateForZoom(placementZoom)),
-          partiallyEvaluatedIconSize(bucket_.iconSizeBinder->evaluateForZoom(placementZoom)),
+          partiallyEvaluatedTextSize(bucket_.textSizeBinder->evaluateForZoom(sizeEvaluationZoom)),
+          partiallyEvaluatedIconSize(bucket_.iconSizeBinder->evaluateForZoom(sizeEvaluationZoom)),
           avoidEdges(std::move(avoidEdges_)) {}
 
     const SymbolBucket& getBucket() const { return bucket.get(); }
@@ -184,6 +185,7 @@ Placement::Placement(std::shared_ptr<const UpdateParameters> updateParameters_,
       transitionOptions(updateParameters->transitionOptions),
       commitTime(updateParameters->timePoint),
       placementZoom(static_cast<float>(updateParameters->transformState.getZoom())),
+      evaluationZoomBias(updateParameters->evaluationZoomBias),
       collisionGroups(updateParameters->crossSourceCollisions),
       prevPlacement(std::move(prevPlacement_)),
       showCollisionBoxes(updateParameters->debugOptions & MapDebugOptions::Collision) {
@@ -241,6 +243,7 @@ void Placement::placeSymbolBucket(const BucketPlacementData& params, std::set<ui
                          params.tile,
                          collisionIndex.getTransformState(),
                          placementZoom,
+                         placementZoom + evaluationZoomBias,
                          collisionGroups.get(params.sourceId),
                          getAvoidEdges(symbolBucket, renderTile.matrix)};
     for (const SymbolInstance& symbol : getSortedSymbols(params, ctx.pixelRatio)) {
@@ -794,7 +797,8 @@ bool Placement::updateBucketDynamicVertices(SymbolBucket& bucket,
                                     keepUpright,
                                     tile,
                                     *bucket.iconSizeBinder,
-                                    state);
+                                    state,
+                                    evaluationZoomBias);
                 result = true;
             }
             if (bucket.hasIconData()) {
@@ -806,7 +810,8 @@ bool Placement::updateBucketDynamicVertices(SymbolBucket& bucket,
                                     keepUpright,
                                     tile,
                                     *bucket.iconSizeBinder,
-                                    state);
+                                    state,
+                                    evaluationZoomBias);
                 result = true;
             }
         }
@@ -822,14 +827,16 @@ bool Placement::updateBucketDynamicVertices(SymbolBucket& bucket,
                                 keepUpright,
                                 tile,
                                 *bucket.textSizeBinder,
-                                state);
+                                state,
+                                evaluationZoomBias);
             result = true;
         }
     } else if (hasVariableAnchors) {
         bucket.text.sharedDynamicVertices->clear();
         bucket.hasVariablePlacement = false;
 
-        const auto partiallyEvaluatedSize = bucket.textSizeBinder->evaluateForZoom(static_cast<float>(state.getZoom()));
+        const auto partiallyEvaluatedSize = bucket.textSizeBinder->evaluateForZoom(
+            static_cast<float>(state.getZoom()) + evaluationZoomBias);
         const auto tileScale = static_cast<float>(
             std::pow(2, state.getZoom() - tile.getOverscaledTileID().overscaledZ));
         const bool rotateWithMap = layout.get<TextRotationAlignment>() == AlignmentType::Map;
@@ -1481,6 +1488,7 @@ void TilePlacement::placeSymbolBucket(const BucketPlacementData& params, std::se
                          params.tile,
                          collisionIndex.getTransformState(),
                          placementZoom,
+                         placementZoom + evaluationZoomBias,
                          collisionGroups.get(params.sourceId),
                          getAvoidEdges(bucket, renderTile.matrix)};
 

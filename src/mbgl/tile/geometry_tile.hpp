@@ -127,6 +127,8 @@ private:
 
     const MapMode mode;
 
+    const float evaluationZoomBiasStatic;
+
     bool showCollisionBoxes;
 
     enum class FadeState {

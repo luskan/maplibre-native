@@ -122,6 +122,7 @@ SymbolLayout::SymbolLayout(const BucketParameters& parameters,
       sourceLayer(std::move(sourceLayer_)),
       overscaling(static_cast<float>(parameters.tileID.overscaleFactor())),
       zoom(parameters.tileID.overscaledZ),
+      paintZoomBias(parameters.evaluationZoomBiasStatic),
       canonicalID(parameters.tileID.canonical),
       mode(parameters.mode),
       pixelRatio(parameters.pixelRatio),
@@ -592,9 +593,10 @@ void SymbolLayout::prepareSymbols(const GlyphMap& glyphMap,
         ShapedTextOrientations shapedTextOrientations;
         std::optional<PositionedIcon> shapedIcon;
         std::array<float, 2> textOffset{{0.0f, 0.0f}};
-        const float layoutTextSize = layout->evaluate<TextSize>(zoom + 1, feature, canonicalID);
-        const float layoutTextSizeAtBucketZoomLevel = layout->evaluate<TextSize>(zoom, feature, canonicalID);
-        const float layoutIconSize = layout->evaluate<IconSize>(zoom + 1, feature, canonicalID);
+        const float layoutTextSize = layout->evaluate<TextSize>(zoom + paintZoomBias + 1, feature, canonicalID);
+        const float layoutTextSizeAtBucketZoomLevel = layout->evaluate<TextSize>(
+            zoom + paintZoomBias, feature, canonicalID);
+        const float layoutIconSize = layout->evaluate<IconSize>(zoom + paintZoomBias + 1, feature, canonicalID);
 
         // if feature has text, shape the text
         if (feature.formattedText && layoutTextSize > 0.0f) {
@@ -1016,7 +1018,7 @@ void SymbolLayout::createBucket(const ImagePositions&,
                                                  layerPaintProperties,
                                                  textSize,
                                                  iconSize,
-                                                 zoom,
+                                                 zoom + paintZoomBias,
                                                  iconsNeedLinear,
                                                  sortFeaturesByY,
                                                  bucketLeaderID,

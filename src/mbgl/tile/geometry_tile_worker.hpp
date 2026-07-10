@@ -42,6 +42,7 @@ public:
                        const std::atomic<bool>&,
                        MapMode,
                        float pixelRatio,
+                       float evaluationZoomBiasStatic,
                        bool showCollisionBoxes_,
                        gfx::DynamicTextureAtlasPtr,
                        std::shared_ptr<FontFaces> fontFaces);
@@ -88,6 +89,7 @@ private:
     const std::atomic<bool>& obsolete;
     const MapMode mode;
     const float pixelRatio;
+    const float evaluationZoomBiasStatic;
 
     std::unique_ptr<FeatureIndex> featureIndex;
     mbgl::unordered_map<std::string, LayerRenderData> renderData;

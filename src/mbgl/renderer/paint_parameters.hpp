@@ -60,7 +60,8 @@ public:
                     uint64_t frameCount,
                     double tileLodMinRadius,
                     double tileLodScale,
-                    double tileLodPitchThreshold);
+                    double tileLodPitchThreshold,
+                    float evaluationZoomBias = 0);
     ~PaintParameters();
 
     gfx::Context& context;
@@ -82,6 +83,7 @@ public:
     TimePoint timePoint;
 
     float pixelRatio;
+    float evaluationZoomBias;
     std::array<float, 2> pixelsToGLUnits;
 
     gfx::ShaderRegistry& shaders;

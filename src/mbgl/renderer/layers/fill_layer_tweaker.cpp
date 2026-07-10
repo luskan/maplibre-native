@@ -55,6 +55,7 @@ void FillLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
     const auto& translation = evaluated.get<FillTranslate>();
     const auto anchor = evaluated.get<FillTranslateAnchor>();
     const auto zoom = static_cast<float>(parameters.state.getZoom());
+    const auto zEval = zoom + parameters.evaluationZoomBias;
     const auto intZoom = parameters.state.getIntegerZoom();
 
 #if MLN_UBO_CONSOLIDATION
@@ -114,8 +115,8 @@ void FillLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
 #endif
                     .matrix = util::cast<float>(matrix),
 
-                    .color_t = std::get<0>(binders->get<FillColor>()->interpolationFactor(zoom)),
-                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zoom)),
+                    .color_t = std::get<0>(binders->get<FillColor>()->interpolationFactor(zEval)),
+                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zEval)),
                     .pad1 = 0,
                     .pad2 = 0
                 };
@@ -133,8 +134,8 @@ void FillLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
 #endif
                     .matrix = util::cast<float>(matrix),
 
-                    .outline_color_t = std::get<0>(binders->get<FillOutlineColor>()->interpolationFactor(zoom)),
-                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zoom)),
+                    .outline_color_t = std::get<0>(binders->get<FillOutlineColor>()->interpolationFactor(zEval)),
+                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zEval)),
                     .pad1 = 0,
                     .pad2 = 0
                 };
@@ -156,9 +157,9 @@ void FillLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
                     .pixel_coord_lower = {static_cast<float>(pixelX & 0xFFFF), static_cast<float>(pixelY & 0xFFFF)},
                     .tile_ratio = tileRatio,
 
-                    .pattern_from_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zoom)),
-                    .pattern_to_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zoom)),
-                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zoom))
+                    .pattern_from_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zEval)),
+                    .pattern_to_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zEval)),
+                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zEval))
                 };
 
 #if MLN_UBO_CONSOLIDATION
@@ -192,9 +193,9 @@ void FillLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
                     .pixel_coord_lower = {static_cast<float>(pixelX & 0xFFFF), static_cast<float>(pixelY & 0xFFFF)},
                     .tile_ratio = tileRatio,
 
-                    .pattern_from_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zoom)),
-                    .pattern_to_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zoom)),
-                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zoom))
+                    .pattern_from_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zEval)),
+                    .pattern_to_t = std::get<0>(binders->get<FillPattern>()->interpolationFactor(zEval)),
+                    .opacity_t = std::get<0>(binders->get<FillOpacity>()->interpolationFactor(zEval))
                 };
 
 #if MLN_UBO_CONSOLIDATION

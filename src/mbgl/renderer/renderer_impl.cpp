@@ -198,7 +198,8 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
                                frameCount,
                                updateParameters->tileLodMinRadius,
                                updateParameters->tileLodScale,
-                               updateParameters->tileLodPitchThreshold};
+                               updateParameters->tileLodPitchThreshold,
+                               updateParameters->evaluationZoomBias};
 
     parameters.symbolFadeChange = renderTreeParameters.symbolFadeChange;
     parameters.opaquePassCutoff = renderTreeParameters.opaquePassCutOff;

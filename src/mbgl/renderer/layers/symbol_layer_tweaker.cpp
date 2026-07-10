@@ -67,6 +67,7 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
 #endif
 
     const auto zoom = static_cast<float>(state.getZoom());
+    const auto zEval = zoom + parameters.evaluationZoomBias;
 
     if (!evaluatedPropsUniformBuffer || propertiesUpdated) {
         const SymbolEvaluatedPropsUBO propsUBO = {.text_fill_color = constOrDefault<TextColor>(evaluated),
@@ -162,7 +163,7 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
         const bool rotateInShader = rotateWithMap && !pitchWithMap && !alongLine;
 
         const auto& sizeBinder = isText ? bucket->textSizeBinder : bucket->iconSizeBinder;
-        const auto size = sizeBinder->evaluateForZoom(currentZoom);
+        const auto size = sizeBinder->evaluateForZoom(currentZoom + parameters.evaluationZoomBias);
 
 #if MLN_UBO_CONSOLIDATION
         drawableUBOVector[i] = {
@@ -185,11 +186,11 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
             .size_t = size.sizeT,
             .size = size.size,
 
-            .fill_color_t = getInterpFactor<TextColor, IconColor, 0>(paintProperties, isText, zoom),
-            .halo_color_t = getInterpFactor<TextHaloColor, IconHaloColor, 0>(paintProperties, isText, zoom),
-            .opacity_t = getInterpFactor<TextOpacity, IconOpacity, 0>(paintProperties, isText, zoom),
-            .halo_width_t = getInterpFactor<TextHaloWidth, IconHaloWidth, 0>(paintProperties, isText, zoom),
-            .halo_blur_t = getInterpFactor<TextHaloBlur, IconHaloBlur, 0>(paintProperties, isText, zoom),
+            .fill_color_t = getInterpFactor<TextColor, IconColor, 0>(paintProperties, isText, zEval),
+            .halo_color_t = getInterpFactor<TextHaloColor, IconHaloColor, 0>(paintProperties, isText, zEval),
+            .opacity_t = getInterpFactor<TextOpacity, IconOpacity, 0>(paintProperties, isText, zEval),
+            .halo_width_t = getInterpFactor<TextHaloWidth, IconHaloWidth, 0>(paintProperties, isText, zEval),
+            .halo_blur_t = getInterpFactor<TextHaloBlur, IconHaloBlur, 0>(paintProperties, isText, zEval),
         };
 
 #if MLN_UBO_CONSOLIDATION

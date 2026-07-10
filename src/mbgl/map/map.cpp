@@ -599,6 +599,17 @@ double Map::getTileLodZoomShift() const {
     return impl->tileLodZoomShift;
 }
 
+void Map::setStyleEvaluationZoomBias(double staticBias, std::optional<double> referenceLatitude) {
+    impl->evalZoomBiasStatic = staticBias;
+    impl->evalZoomBiasRefLat = referenceLatitude;
+    impl->evalZoomBiasLat = 0;
+    impl->onUpdate();
+}
+
+double Map::getStyleEvaluationZoomBias() const {
+    return impl->evalZoomBiasStatic + impl->evalZoomBiasLat;
+}
+
 ClientOptions Map::getClientOptions() const {
     return impl->fileSource ? impl->fileSource->getClientOptions() : ClientOptions();
 }

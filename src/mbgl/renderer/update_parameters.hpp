@@ -48,6 +48,10 @@ public:
 
     const bool crossSourceCollisions;
 
+    // Keep these fields in the same order as Map::Impl::onUpdate.
+    const float evaluationZoomBias = 0;
+    const float evaluationZoomBiasStatic = 0;
+
     double tileLodMinRadius = 3;
     double tileLodScale = 1;
     double tileLodPitchThreshold = (60.0 / 180.0) * std::numbers::pi;

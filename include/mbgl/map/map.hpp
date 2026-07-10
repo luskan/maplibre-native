@@ -198,6 +198,11 @@ public:
     void setTileLodZoomShift(double shift);
     double getTileLodZoomShift() const;
 
+    /// Sets the zoom offset used for style evaluation.
+    /// The reference latitude adds a scale correction without changing the camera zoom.
+    void setStyleEvaluationZoomBias(double staticBias, std::optional<double> referenceLatitude);
+    double getStyleEvaluationZoomBias() const;
+
     ClientOptions getClientOptions() const;
 
     const std::unique_ptr<util::ActionJournal>& getActionJournal();
