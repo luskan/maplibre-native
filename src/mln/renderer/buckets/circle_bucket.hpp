@@ -22,7 +22,8 @@ public:
 
     CircleBucket(const std::map<std::string, Immutable<style::LayerProperties>>& layerPaintProperties,
                  MapMode mode,
-                 float zoom);
+                 float zoom,
+                 float paintZoomBias = 0);
     ~CircleBucket() override;
 
     bool hasData() const override;

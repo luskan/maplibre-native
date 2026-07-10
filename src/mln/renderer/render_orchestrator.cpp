@@ -172,7 +172,8 @@ std::unique_ptr<RenderTree> RenderOrchestrator::createRenderTree(
         }
     }
 
-    const bool zoomChanged = zoomHistory.update(static_cast<float>(updateParameters->transformState.getZoom()),
+    const bool zoomChanged = zoomHistory.update(static_cast<float>(updateParameters->transformState.getZoom()) +
+                                                    updateParameters->evaluationZoomBias,
                                                 updateParameters->timePoint);
 
     const TransitionOptions transitionOptions = isMapModeContinuous ? updateParameters->transitionOptions
@@ -201,7 +202,8 @@ std::unique_ptr<RenderTree> RenderOrchestrator::createRenderTree(
                                   .tileLodPitchThreshold = updateParameters->tileLodPitchThreshold,
                                   .tileLodZoomShift = updateParameters->tileLodZoomShift,
                                   .tileLodMode = updateParameters->tileLodMode,
-                                  .dynamicTextureAtlas = dynamicTextureAtlas};
+                                  .dynamicTextureAtlas = dynamicTextureAtlas,
+                                  .evaluationZoomBiasStatic = updateParameters->evaluationZoomBiasStatic};
 
     glyphManager->setURL(updateParameters->glyphURL);
     glyphManager->setFontFaces(updateParameters->fontFaces);

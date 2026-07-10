@@ -40,6 +40,7 @@ public:
     TileLodMode tileLodMode = TileLodMode::Default;
     gfx::DynamicTextureAtlasPtr dynamicTextureAtlas;
     bool isUpdateSynchronous = false;
+    float evaluationZoomBiasStatic = 0;
 };
 
 } // namespace mln

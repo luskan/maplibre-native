@@ -36,6 +36,7 @@ void CircleLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
 #endif
 
     const auto zoom = static_cast<float>(parameters.state.getZoom());
+    const auto zEval = zoom + parameters.evaluationZoomBias;
     const bool pitchWithMap = evaluated.get<CirclePitchAlignment>() == AlignmentType::Map;
     const bool scaleWithMap = evaluated.get<CirclePitchScale>() == CirclePitchScaleType::Map;
 
@@ -96,13 +97,13 @@ void CircleLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
             .matrix = util::cast<float>(matrix),
             .extrude_scale = extrudeScale,
 
-            .color_t = std::get<0>(binders->get<CircleColor>()->interpolationFactor(zoom)),
-            .radius_t = std::get<0>(binders->get<CircleRadius>()->interpolationFactor(zoom)),
-            .blur_t = std::get<0>(binders->get<CircleBlur>()->interpolationFactor(zoom)),
-            .opacity_t = std::get<0>(binders->get<CircleOpacity>()->interpolationFactor(zoom)),
-            .stroke_color_t = std::get<0>(binders->get<CircleStrokeColor>()->interpolationFactor(zoom)),
-            .stroke_width_t = std::get<0>(binders->get<CircleStrokeWidth>()->interpolationFactor(zoom)),
-            .stroke_opacity_t = std::get<0>(binders->get<CircleStrokeOpacity>()->interpolationFactor(zoom)),
+            .color_t = std::get<0>(binders->get<CircleColor>()->interpolationFactor(zEval)),
+            .radius_t = std::get<0>(binders->get<CircleRadius>()->interpolationFactor(zEval)),
+            .blur_t = std::get<0>(binders->get<CircleBlur>()->interpolationFactor(zEval)),
+            .opacity_t = std::get<0>(binders->get<CircleOpacity>()->interpolationFactor(zEval)),
+            .stroke_color_t = std::get<0>(binders->get<CircleStrokeColor>()->interpolationFactor(zEval)),
+            .stroke_width_t = std::get<0>(binders->get<CircleStrokeWidth>()->interpolationFactor(zEval)),
+            .stroke_opacity_t = std::get<0>(binders->get<CircleStrokeOpacity>()->interpolationFactor(zEval)),
             .pad1 = 0,
             .pad2 = 0,
             .pad3 = 0

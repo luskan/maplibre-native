@@ -23,7 +23,8 @@ public:
     LineBucket(PossiblyEvaluatedLayoutProperties layout,
                const std::map<std::string, Immutable<style::LayerProperties>>& layerPaintProperties,
                float zoom,
-               uint32_t overscaling);
+               uint32_t overscaling,
+               float paintZoomBias = 0);
     ~LineBucket() override;
 
     void addFeature(const GeometryTileFeature&,

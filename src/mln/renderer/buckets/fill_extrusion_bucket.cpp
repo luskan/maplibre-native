@@ -56,13 +56,14 @@ FillExtrusionBucket::FillExtrusionBucket(
     const FillExtrusionBucket::PossiblyEvaluatedLayoutProperties& layout_,
     const std::map<std::string, Immutable<style::LayerProperties>>& layerPaintProperties,
     const float zoom,
-    const uint32_t)
+    const uint32_t,
+    const float paintZoomBias)
     : layout(std::move(layout_)) {
     for (const auto& pair : layerPaintProperties) {
         paintPropertyBinders.emplace(
             std::piecewise_construct,
             std::forward_as_tuple(pair.first),
-            std::forward_as_tuple(getEvaluated<FillExtrusionLayerProperties>(pair.second), zoom));
+            std::forward_as_tuple(getEvaluated<FillExtrusionLayerProperties>(pair.second), zoom + paintZoomBias));
     }
 }
 

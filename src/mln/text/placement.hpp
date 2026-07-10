@@ -189,6 +189,7 @@ protected:
     TimePoint fadeStartTime;
     TimePoint commitTime;
     float placementZoom = 0.0f;
+    float evaluationZoomBias = 0.0f;
     float prevZoomAdjustment = 0.0f;
 
     std::unordered_map<uint32_t, JointPlacement> placements;

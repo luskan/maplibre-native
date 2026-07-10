@@ -64,7 +64,8 @@ public:
                     double tileLodPitchThreshold,
                     TileLodMode tileLodMode,
                     Size renderableSize,
-                    const gfx::ScissorRect&);
+                    const gfx::ScissorRect&,
+                    float evaluationZoomBias = 0);
     ~PaintParameters();
 
     gfx::Context& context;
@@ -87,6 +88,7 @@ public:
 
     float pixelRatio;
     const Size renderableSize;
+    float evaluationZoomBias;
     std::array<float, 2> pixelsToGLUnits;
 
     gfx::ShaderRegistry& shaders;

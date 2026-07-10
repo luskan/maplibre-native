@@ -26,6 +26,7 @@ void HeatmapLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
 
     auto& context = parameters.context;
     const auto zoom = static_cast<float>(parameters.state.getZoom());
+    const auto zEval = zoom + parameters.evaluationZoomBias;
     const auto& evaluated = static_cast<const HeatmapLayerProperties&>(*evaluatedProperties).evaluated;
 
 #if !defined(NDEBUG)
@@ -77,8 +78,8 @@ void HeatmapLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
             .matrix = util::cast<float>(matrix),
             .extrude_scale = tileID.pixelsToTileUnits(1.0f, zoom),
 
-            .weight_t = std::get<0>(binders->get<HeatmapWeight>()->interpolationFactor(zoom)),
-            .radius_t = std::get<0>(binders->get<HeatmapRadius>()->interpolationFactor(zoom)),
+            .weight_t = std::get<0>(binders->get<HeatmapWeight>()->interpolationFactor(zEval)),
+            .radius_t = std::get<0>(binders->get<HeatmapRadius>()->interpolationFactor(zEval)),
             .pad1 = 0
         };
 #if MLN_UBO_CONSOLIDATION

@@ -39,6 +39,7 @@ GeometryTileWorker::GeometryTileWorker(OptionalActorRef<GeometryTileWorker> self
                                        const std::atomic<bool>& obsolete_,
                                        const MapMode mode_,
                                        const float pixelRatio_,
+                                       const float evaluationZoomBiasStatic_,
                                        const bool showCollisionBoxes_,
                                        gfx::DynamicTextureAtlasPtr dynamicTextureAtlas_,
                                        std::shared_ptr<FontFaces> fontFaces_,
@@ -51,6 +52,7 @@ GeometryTileWorker::GeometryTileWorker(OptionalActorRef<GeometryTileWorker> self
       obsolete(obsolete_),
       mode(mode_),
       pixelRatio(pixelRatio_),
+      evaluationZoomBiasStatic(evaluationZoomBiasStatic_),
       showCollisionBoxes(showCollisionBoxes_),
       dynamicTextureAtlas(dynamicTextureAtlas_),
       fontFaces(fontFaces_),
@@ -457,7 +459,11 @@ void GeometryTileWorker::parse() {
 
         const style::Layer::Impl& leaderImpl = *(group.at(0)->baseImpl);
         BucketParameters parameters{
-            .tileID = id, .mode = mode, .pixelRatio = pixelRatio, .layerType = leaderImpl.getTypeInfo()};
+            .tileID = id,
+            .mode = mode,
+            .pixelRatio = pixelRatio,
+            .layerType = leaderImpl.getTypeInfo(),
+            .evaluationZoomBiasStatic = evaluationZoomBiasStatic};
 
         auto geometryLayer = (*data)->getLayer(leaderImpl.sourceLayer);
         if (!geometryLayer) {

@@ -97,6 +97,7 @@ public:
                   const LayoutParameters& layoutParameters)
         : sourceLayer(std::move(sourceLayer_)),
           zoom(parameters.tileID.overscaledZ),
+          paintZoomBias(parameters.evaluationZoomBiasStatic),
           overscaling(parameters.tileID.overscaleFactor()),
           hasPattern(false) {
         assert(!group.empty());
@@ -187,7 +188,7 @@ public:
                       const bool /*firstLoad*/,
                       const bool /*showCollisionBoxes*/,
                       const CanonicalTileID& canonical) override {
-        auto bucket = std::make_shared<BucketType>(layout, layerPropertiesMap, zoom, overscaling);
+        auto bucket = std::make_shared<BucketType>(layout, layerPropertiesMap, zoom, overscaling, paintZoomBias);
         for (auto& patternFeature : features) {
             const auto i = patternFeature.i;
             std::unique_ptr<GeometryTileFeature> feature = std::move(patternFeature.feature);
@@ -213,6 +214,7 @@ protected:
     typename LayoutPropertiesType::PossiblyEvaluated layout;
 
     const float zoom;
+    const float paintZoomBias;
     const uint32_t overscaling;
     std::string sourceLayerID;
     bool hasPattern;

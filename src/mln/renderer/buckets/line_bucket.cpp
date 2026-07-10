@@ -15,14 +15,16 @@ using namespace style;
 LineBucket::LineBucket(LineBucket::PossiblyEvaluatedLayoutProperties layout_,
                        const std::map<std::string, Immutable<LayerProperties>>& layerPaintProperties,
                        const float zoom_,
-                       const uint32_t overscaling_)
+                       const uint32_t overscaling_,
+                       const float paintZoomBias)
     : layout(std::move(layout_)),
       zoom(zoom_),
       overscaling(overscaling_) {
     for (const auto& pair : layerPaintProperties) {
-        paintPropertyBinders.emplace(std::piecewise_construct,
-                                     std::forward_as_tuple(pair.first),
-                                     std::forward_as_tuple(getEvaluated<LineLayerProperties>(pair.second), zoom));
+        paintPropertyBinders.emplace(
+            std::piecewise_construct,
+            std::forward_as_tuple(pair.first),
+            std::forward_as_tuple(getEvaluated<LineLayerProperties>(pair.second), zoom + paintZoomBias));
     }
 }
 

@@ -501,8 +501,10 @@ void reprojectLineLabels(SymbolBucket::DynamicAttributeVector& dynamicVertexArra
                          bool keepUpright,
                          const RenderTile& tile,
                          const SymbolSizeBinder& sizeBinder,
-                         const TransformState& state) {
-    const ZoomEvaluatedSize partiallyEvaluatedSize = sizeBinder.evaluateForZoom(static_cast<float>(state.getZoom()));
+                         const TransformState& state,
+                         const float evaluationZoomBias) {
+    const ZoomEvaluatedSize partiallyEvaluatedSize = sizeBinder.evaluateForZoom(static_cast<float>(state.getZoom()) +
+                                                                                evaluationZoomBias);
 
     const std::array<double, 2> clippingBuffer = {
         {256.0 / state.getSize().width * 2.0 + 1.0, 256.0 / state.getSize().height * 2.0 + 1.0}};

@@ -223,6 +223,7 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
         updateParameters->tileLodMode,
         renderableSize,
         scissorRect,
+        updateParameters->evaluationZoomBias,
     };
 
     parameters.symbolFadeChange = renderTreeParameters.symbolFadeChange;

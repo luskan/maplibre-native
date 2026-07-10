@@ -49,6 +49,9 @@ public:
     const bool crossSourceCollisions;
 
     const bool fastPFOREnabled = false;
+    // Keep these fields in the same order as Map::Impl::onUpdate.
+    const float evaluationZoomBias = 0;
+    const float evaluationZoomBiasStatic = 0;
 
     double tileLodMinRadius = 3;
     double tileLodScale = 1;

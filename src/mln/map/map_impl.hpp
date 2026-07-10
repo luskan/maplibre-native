@@ -115,6 +115,10 @@ public:
     double tileLodPitchThreshold = (60.0 / 180.0) * std::numbers::pi;
     double tileLodZoomShift = 0;
     TileLodMode tileLodMode = TileLodMode::Default;
+
+    double evalZoomBiasStatic = 0;
+    std::optional<double> evalZoomBiasRefLat;
+    double evalZoomBiasLat = 0;
 };
 
 // Forward declaration of this method is required for the MapProjection class

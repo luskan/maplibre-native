@@ -10,6 +10,9 @@
 #include <mln/util/action_journal_impl.hpp>
 #include <mln/gfx/rendering_stats.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 namespace mln {
 
 #if !defined(NDEBUG)
@@ -114,6 +117,18 @@ void Map::Impl::onUpdate() {
 
     transform.updateTransitions(timePoint);
 
+    if (evalZoomBiasRefLat) {
+        // Match the ground scale at the reference latitude.
+        // Ignore small changes to avoid style updates while panning.
+        constexpr double deg2rad = std::numbers::pi / 180.0;
+        const double latC = std::clamp(transform.getState().getLatLng().latitude(), -85.0, 85.0);
+        const double lat0 = std::clamp(*evalZoomBiasRefLat, -85.0, 85.0);
+        const double candidate = std::log2(std::cos(lat0 * deg2rad) / std::cos(latC * deg2rad));
+        if (std::abs(candidate - evalZoomBiasLat) > 0.01) {
+            evalZoomBiasLat = candidate;
+        }
+    }
+
     UpdateParameters params = {.styleLoaded = style->impl->isLoaded(),
                                .mode = mode,
                                .pixelRatio = pixelRatio,
@@ -134,6 +149,8 @@ void Map::Impl::onUpdate() {
                                .stillImageRequest = bool(stillImageRequest),
                                .crossSourceCollisions = crossSourceCollisions,
                                .fastPFOREnabled = fastPFOREnabled,
+                               .evaluationZoomBias = static_cast<float>(evalZoomBiasStatic + evalZoomBiasLat),
+                               .evaluationZoomBiasStatic = static_cast<float>(evalZoomBiasStatic),
                                .tileLodMinRadius = tileLodMinRadius,
                                .tileLodScale = tileLodScale,
                                .tileLodPitchThreshold = tileLodPitchThreshold,

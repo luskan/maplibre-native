@@ -11,12 +11,14 @@ using namespace style;
 
 CircleBucket::CircleBucket(const std::map<std::string, Immutable<LayerProperties>>& layerPaintProperties,
                            const MapMode mode_,
-                           const float zoom)
+                           const float zoom,
+                           const float paintZoomBias)
     : mode(mode_) {
     for (const auto& pair : layerPaintProperties) {
-        paintPropertyBinders.emplace(std::piecewise_construct,
-                                     std::forward_as_tuple(pair.first),
-                                     std::forward_as_tuple(getEvaluated<CircleLayerProperties>(pair.second), zoom));
+        paintPropertyBinders.emplace(
+            std::piecewise_construct,
+            std::forward_as_tuple(pair.first),
+            std::forward_as_tuple(getEvaluated<CircleLayerProperties>(pair.second), zoom + paintZoomBias));
     }
 }
 
