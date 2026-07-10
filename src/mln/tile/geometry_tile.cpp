@@ -203,7 +203,9 @@ GeometryTile::GeometryTile(const OverscaledTileID& id_,
              obsolete,
              parameters.mode,
              parameters.pixelRatio,
-             parameters.evaluationZoomBiasStatic,
+             // Sample paint at the tile display zoom to avoid jumps when tiles change.
+             // Bucket filtering still uses the base offset.
+             parameters.evaluationZoomBiasStatic - static_cast<float>(parameters.tileLodZoomShift),
              parameters.debugOptions & MapDebugOptions::Collision,
              parameters.dynamicTextureAtlas,
              parameters.glyphManager->getFontFaces(),
