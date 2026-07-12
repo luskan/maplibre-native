@@ -202,6 +202,7 @@ public:
     void setBearing(double);
     float getFieldOfView() const;
     void setFieldOfView(double);
+    bool setFieldOfViewOverride(double);
     float getCameraToCenterDistance() const;
     double getPitch() const;
     void setPitch(double);

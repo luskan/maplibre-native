@@ -168,6 +168,11 @@ public:
     void setMaxGroundViewDistanceMeters(double meters);
     double getMaxGroundViewDistanceMeters() const;
 
+    /// Sets the vertical field of view in radians, clamped to 10-120 degrees.
+    /// Invalid values restore the default, custom values need the high-pitch profile.
+    void setFieldOfView(double radians);
+    float getFieldOfView() const;
+
     // Tile LOD controls
     //
     /// The number of map tile requests can be reduced by using a lower level

@@ -716,6 +716,19 @@ float TransformState::getCameraToCenterDistance() const {
     return static_cast<float>(0.5 * size.height / std::tan(fov / 2.0));
 }
 
+bool TransformState::setFieldOfViewOverride(double val) {
+    constexpr double minFov = 10.0 * pi / 180.0;
+    constexpr double maxFov = 120.0 * pi / 180.0;
+    const double sanitized = (std::isfinite(val) && val > 0.0) ? std::clamp(val, minFov, maxFov)
+                                                               : util::DEFAULT_FOV;
+    if (fov == sanitized) {
+        return false;
+    }
+    fov = sanitized;
+    requestMatricesUpdate = true;
+    return true;
+}
+
 double TransformState::getPitch() const {
     return pitch;
 }

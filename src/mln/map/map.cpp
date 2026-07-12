@@ -576,6 +576,19 @@ double Map::getMaxGroundViewDistanceMeters() const {
     return impl->transform.getMaxGroundViewDistanceMeters();
 }
 
+void Map::setFieldOfView(double radians) {
+    // Mark the camera changed only when the lens changes.
+    // This keeps a no-op reset from blocking the style camera.
+    if (impl->transform.setFieldOfView(radians)) {
+        impl->cameraMutated = true;
+        impl->onUpdate();
+    }
+}
+
+float Map::getFieldOfView() const {
+    return static_cast<float>(impl->transform.getFieldOfView());
+}
+
 void Map::setTileLodMinRadius(double radius) {
     impl->tileLodMinRadius = radius;
 }
