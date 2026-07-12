@@ -96,6 +96,9 @@ public:
     void setMaxGroundViewDistanceMeters(double);
     double getMaxGroundViewDistanceMeters() const;
 
+    bool setFieldOfView(double);
+    float getFieldOfView() const;
+
     // North Orientation
     void setNorthOrientation(NorthOrientation);
     NorthOrientation getNorthOrientation() const;

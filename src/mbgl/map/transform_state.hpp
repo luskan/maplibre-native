@@ -173,6 +173,7 @@ public:
     double getBearing() const;
     void setBearing(double);
     float getFieldOfView() const;
+    bool setFieldOfView(double);
     float getCameraToCenterDistance() const;
     double getPitch() const;
     void setPitch(double);
@@ -286,7 +287,8 @@ private:
     // to be defined as 1.5 screen heights above the ground, which was an
     // arbitrary choice. This is the fov equivalent to that value calculated
     // with: `fov = 2 * arctan((height / 2) / (height * 1.5))`
-    double fov = 0.6435011087932844;
+    static constexpr double kDefaultFieldOfView = 0.6435011087932844;
+    double fov = kDefaultFieldOfView;
     double pitch = 0.0;
     double xSkew = 0.0;
     double ySkew = 1.0;

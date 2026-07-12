@@ -481,6 +481,14 @@ double Transform::getMaxGroundViewDistanceMeters() const {
     return state.getMaxGroundViewDistanceMeters();
 }
 
+bool Transform::setFieldOfView(double radians) {
+    return state.setFieldOfView(radians);
+}
+
+float Transform::getFieldOfView() const {
+    return state.getFieldOfView();
+}
+
 // MARK: - North Orientation
 
 void Transform::setNorthOrientation(NorthOrientation orientation) {
