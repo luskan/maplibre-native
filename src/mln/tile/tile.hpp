@@ -30,6 +30,7 @@ class RenderedQueryOptions;
 class SourceQueryOptions;
 class CollisionIndex;
 class SourceFeatureState;
+class TileParameters;
 
 namespace gfx {
 class UploadPass;
@@ -81,6 +82,9 @@ public:
     virtual bool layerPropertiesUpdated(const Immutable<style::LayerProperties>& layerProperties) = 0;
     virtual void setShowCollisionBoxes(const bool) {}
     virtual void setLayers(const std::vector<Immutable<style::LayerProperties>>&) {}
+    virtual void setLayers(const std::vector<Immutable<style::LayerProperties>>& layers, const TileParameters&) {
+        setLayers(layers);
+    }
     virtual void setMask(TileMask&&) {}
 
     virtual void queryRenderedFeatures(std::unordered_map<std::string, std::vector<Feature>>& result,

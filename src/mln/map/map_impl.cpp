@@ -151,6 +151,7 @@ void Map::Impl::onUpdate() {
                                .fastPFOREnabled = fastPFOREnabled,
                                .evaluationZoomBias = static_cast<float>(evalZoomBiasStatic + evalZoomBiasLat),
                                .evaluationZoomBiasStatic = static_cast<float>(evalZoomBiasStatic),
+                               .evaluationZoomBiasEnabled = evalZoomBiasRefLat.has_value() || evalZoomBiasStatic != 0.0,
                                .tileLodMinRadius = tileLodMinRadius,
                                .tileLodScale = tileLodScale,
                                .tileLodPitchThreshold = tileLodPitchThreshold,

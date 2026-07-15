@@ -174,11 +174,9 @@ GeometryTile::LayoutResult::~LayoutResult() {
    Correlation between GeometryTile and GeometryTileWorker is safeguarded by two
    correlation schemes:
 
-   GeometryTile's 'correlationID' is used for ensuring the tile will be flagged
-   as non-pending only when the placement coming from the last operation (as in
-   'setData', 'setLayers',  'setShowCollisionBoxes') occurs. This is important
-   for still mode rendering as we want to render only when all layout and
-   placement operations are completed.
+   GeometryTile's 'correlationID' ensures that only the last operation applies
+   its result and flags the tile as non-pending. This is important for still mode
+   rendering because all layout and placement operations must be complete.
 
    GeometryTileWorker's 'imageCorrelationID' is used for checking whether an
    image request reply coming from `GeometryTile` is valid. Previous image
@@ -203,9 +201,8 @@ GeometryTile::GeometryTile(const OverscaledTileID& id_,
              obsolete,
              parameters.mode,
              parameters.pixelRatio,
-             // Sample paint at the tile display zoom to avoid jumps when tiles change.
-             // Bucket filtering still uses the base offset.
-             parameters.evaluationZoomBiasStatic - static_cast<float>(parameters.tileLodZoomShift),
+             geometryTilePaintZoomBias(parameters.geometryTileZoomState, id_.overscaledZ),
+             parameters.geometryTileZoomState.paintZoom.has_value(),
              parameters.debugOptions & MapDebugOptions::Collision,
              parameters.dynamicTextureAtlas,
              parameters.glyphManager->getFontFaces(),
@@ -214,7 +211,9 @@ GeometryTile::GeometryTile(const OverscaledTileID& id_,
       glyphManager(parameters.glyphManager),
       imageManager(parameters.imageManager),
       mode(parameters.mode),
-      evaluationZoomBiasStatic(parameters.evaluationZoomBiasStatic),
+      paintZoomBias(geometryTilePaintZoomBias(parameters.geometryTileZoomState, id_.overscaledZ)),
+      layerZoomBias(geometryTileLayerZoomBias(parameters.geometryTileZoomState, id_.overscaledZ)),
+      useLineWidthZoomCoveringStops(parameters.geometryTileZoomState.paintZoom.has_value()),
       showCollisionBoxes(parameters.debugOptions & MapDebugOptions::Collision) {}
 
 GeometryTile::~GeometryTile() {
@@ -320,7 +319,7 @@ void GeometryTile::setLayers(const std::vector<Immutable<LayerProperties>>& laye
         assert(layerImpl.visibility != VisibilityType::None);
         // Keep the bucket when its adjusted zoom range overlaps the layer.
         // This prevents a visible layer from missing tile data.
-        const float biasedTileZoomMin = static_cast<float>(id.overscaledZ) + evaluationZoomBiasStatic;
+        const float biasedTileZoomMin = static_cast<float>(id.overscaledZ) + layerZoomBias;
         if (biasedTileZoomMin + 1 <= std::floor(layerImpl.minZoom) ||
             biasedTileZoomMin >= std::ceil(layerImpl.maxZoom)) {
             continue;
@@ -330,8 +329,19 @@ void GeometryTile::setLayers(const std::vector<Immutable<LayerProperties>>& laye
     }
 
     ++correlationID;
-    worker.self().invoke(
-        &GeometryTileWorker::setLayers, std::move(impls), imageManager->getAvailableImages(), correlationID);
+    worker.self().invoke(&GeometryTileWorker::setLayers,
+                         std::move(impls),
+                         imageManager->getAvailableImages(),
+                         paintZoomBias,
+                         useLineWidthZoomCoveringStops,
+                         correlationID);
+}
+
+void GeometryTile::setLayers(const std::vector<Immutable<LayerProperties>>& layers, const TileParameters& parameters) {
+    paintZoomBias = geometryTilePaintZoomBias(parameters.geometryTileZoomState, id.overscaledZ);
+    layerZoomBias = geometryTileLayerZoomBias(parameters.geometryTileZoomState, id.overscaledZ);
+    useLineWidthZoomCoveringStops = parameters.geometryTileZoomState.paintZoom.has_value();
+    setLayers(layers);
 }
 
 void GeometryTile::setShowCollisionBoxes(const bool showCollisionBoxes_) {
@@ -347,12 +357,14 @@ void GeometryTile::setShowCollisionBoxes(const bool showCollisionBoxes_) {
 void GeometryTile::onLayout(std::shared_ptr<LayoutResult>&& result, const uint64_t resultCorrelationID) {
     MLN_TRACE_FUNC();
 
+    if (resultCorrelationID != correlationID) {
+        return;
+    }
+
     loaded = true;
     renderable = true;
-    if (resultCorrelationID == correlationID) {
-        pending = false;
-        observer->onTileAction(id, sourceID, TileOperation::EndParse);
-    }
+    pending = false;
+    observer->onTileAction(id, sourceID, TileOperation::EndParse);
 
     const ErrorScope errorScope{observer};
 
@@ -387,11 +399,13 @@ void GeometryTile::setObserver(TileObserver* observer_) {
 }
 
 void GeometryTile::onError(std::exception_ptr err, const uint64_t resultCorrelationID) {
-    loaded = true;
-    if (resultCorrelationID == correlationID) {
-        pending = false;
-        observer->onTileAction(id, sourceID, TileOperation::Error);
+    if (resultCorrelationID != correlationID) {
+        return;
     }
+
+    loaded = true;
+    pending = false;
+    observer->onTileAction(id, sourceID, TileOperation::Error);
     observer->onTileError(*this, std::move(err));
 }
 

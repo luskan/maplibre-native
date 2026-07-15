@@ -298,7 +298,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
         }
 
         if (needsRelayout) {
-            tile.setLayers(layers);
+            tile.setLayers(layers, parameters);
         }
     };
     auto getTileFn = [&](const OverscaledTileID& tileID) -> Tile* {
@@ -324,7 +324,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
         if (!tile) {
             tile = createTile(tileID, observer);
             if (!tile) return nullptr;
-            tile->setLayers(layers);
+            tile->setLayers(layers, parameters);
         }
 
         return tiles.emplace(tileID, std::move(tile)).first->second.get();

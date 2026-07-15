@@ -14,7 +14,8 @@ public:
     const MapMode mode;
     const float pixelRatio;
     const style::LayerTypeInfo* layerType;
-    const float evaluationZoomBiasStatic = 0;
+    const float paintZoomBias = 0;
+    const bool useLineWidthZoomCoveringStops = false;
 };
 
 } // namespace mln

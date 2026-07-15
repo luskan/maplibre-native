@@ -13,11 +13,10 @@ HeatmapBucket::HeatmapBucket(const BucketParameters& parameters,
                              const std::vector<Immutable<style::LayerProperties>>& layers)
     : mode(parameters.mode) {
     for (const auto& layer : layers) {
-        paintPropertyBinders.emplace(
-            std::piecewise_construct,
-            std::forward_as_tuple(layer->baseImpl->id),
-            std::forward_as_tuple(getEvaluated<HeatmapLayerProperties>(layer),
-                                  parameters.tileID.overscaledZ + parameters.evaluationZoomBiasStatic));
+        paintPropertyBinders.emplace(std::piecewise_construct,
+                                     std::forward_as_tuple(layer->baseImpl->id),
+                                     std::forward_as_tuple(getEvaluated<HeatmapLayerProperties>(layer),
+                                                           parameters.tileID.overscaledZ + parameters.paintZoomBias));
     }
 }
 
