@@ -16,7 +16,8 @@ LineBucket::LineBucket(LineBucket::PossiblyEvaluatedLayoutProperties layout_,
                        const std::map<std::string, Immutable<LayerProperties>>& layerPaintProperties,
                        const float zoom_,
                        const uint32_t overscaling_,
-                       const float paintZoomBias)
+                       const float paintZoomBias,
+                       const bool useLineWidthZoomCoveringStops)
     : layout(std::move(layout_)),
       zoom(zoom_),
       overscaling(overscaling_) {
@@ -24,7 +25,8 @@ LineBucket::LineBucket(LineBucket::PossiblyEvaluatedLayoutProperties layout_,
         paintPropertyBinders.emplace(
             std::piecewise_construct,
             std::forward_as_tuple(pair.first),
-            std::forward_as_tuple(getEvaluated<LineLayerProperties>(pair.second), zoom + paintZoomBias));
+            std::forward_as_tuple(
+                getEvaluated<LineLayerProperties>(pair.second), zoom + paintZoomBias, useLineWidthZoomCoveringStops));
     }
 }
 

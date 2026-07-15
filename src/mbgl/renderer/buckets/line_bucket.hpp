@@ -24,7 +24,8 @@ public:
                const std::map<std::string, Immutable<style::LayerProperties>>& layerPaintProperties,
                float zoom,
                uint32_t overscaling,
-               float paintZoomBias = 0);
+               float paintZoomBias = 0,
+               bool useLineWidthZoomCoveringStops = false);
     ~LineBucket() override;
 
     void addFeature(const GeometryTileFeature&,

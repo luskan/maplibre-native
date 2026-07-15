@@ -149,6 +149,7 @@ void Map::Impl::onUpdate() {
                                crossSourceCollisions,
                                static_cast<float>(evalZoomBiasStatic + evalZoomBiasLat),
                                static_cast<float>(evalZoomBiasStatic),
+                               evalZoomBiasRefLat.has_value() || evalZoomBiasStatic != 0.0,
                                tileLodMinRadius,
                                tileLodScale,
                                tileLodPitchThreshold,

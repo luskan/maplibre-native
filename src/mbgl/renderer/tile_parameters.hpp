@@ -3,8 +3,11 @@
 #include <mbgl/map/mode.hpp>
 #include <mbgl/actor/scheduler.hpp>
 
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <numbers>
+#include <optional>
 
 #include <mapbox/std/weak.hpp>
 
@@ -15,6 +18,38 @@ class FileSource;
 class AnnotationManager;
 class ImageManager;
 class GlyphManager;
+
+struct GeometryTileZoomState {
+    std::optional<float> paintZoom;
+    float fallbackPaintZoomBias = 0;
+    float fallbackLayerZoomBias = 0;
+
+    bool operator==(const GeometryTileZoomState& rhs) const {
+        return paintZoom == rhs.paintZoom && fallbackPaintZoomBias == rhs.fallbackPaintZoomBias &&
+               fallbackLayerZoomBias == rhs.fallbackLayerZoomBias;
+    }
+
+    bool operator!=(const GeometryTileZoomState& rhs) const { return !(*this == rhs); }
+};
+
+inline GeometryTileZoomState calculateGeometryTileZoomState(float evaluationZoom,
+                                                            bool evaluationZoomBiasEnabled,
+                                                            float evaluationZoomBiasStatic,
+                                                            double tileLodZoomShift) {
+    if (evaluationZoomBiasEnabled) {
+        return {std::floor(evaluationZoom), 0, 0};
+    }
+
+    return {std::nullopt, evaluationZoomBiasStatic - static_cast<float>(tileLodZoomShift), evaluationZoomBiasStatic};
+}
+
+inline float geometryTilePaintZoomBias(const GeometryTileZoomState& state, int32_t tileZoom) {
+    return state.paintZoom ? *state.paintZoom - static_cast<float>(tileZoom) : state.fallbackPaintZoomBias;
+}
+
+inline float geometryTileLayerZoomBias(const GeometryTileZoomState& state, int32_t tileZoom) {
+    return state.paintZoom ? *state.paintZoom - static_cast<float>(tileZoom) : state.fallbackLayerZoomBias;
+}
 
 namespace gfx {
 class DynamicTextureAtlas;
@@ -38,7 +73,7 @@ public:
     double tileLodPitchThreshold = (60.0 / 180.0) * std::numbers::pi;
     double tileLodZoomShift = 0;
     gfx::DynamicTextureAtlasPtr dynamicTextureAtlas;
-    float evaluationZoomBiasStatic = 0;
+    GeometryTileZoomState geometryTileZoomState;
 };
 
 } // namespace mbgl

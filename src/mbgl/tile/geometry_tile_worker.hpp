@@ -42,7 +42,8 @@ public:
                        const std::atomic<bool>&,
                        MapMode,
                        float pixelRatio,
-                       float evaluationZoomBiasStatic,
+                       float paintZoomBias,
+                       bool useLineWidthZoomCoveringStops,
                        bool showCollisionBoxes_,
                        gfx::DynamicTextureAtlasPtr,
                        std::shared_ptr<FontFaces> fontFaces);
@@ -50,6 +51,8 @@ public:
 
     void setLayers(std::vector<Immutable<style::LayerProperties>>,
                    std::set<std::string> availableImages,
+                   float paintZoomBias,
+                   bool useLineWidthZoomCoveringStops,
                    uint64_t correlationID);
     void setData(std::unique_ptr<const GeometryTileData>,
                  std::set<std::string> availableImages,
@@ -89,7 +92,8 @@ private:
     const std::atomic<bool>& obsolete;
     const MapMode mode;
     const float pixelRatio;
-    const float evaluationZoomBiasStatic;
+    float paintZoomBias;
+    bool useLineWidthZoomCoveringStops;
 
     std::unique_ptr<FeatureIndex> featureIndex;
     mbgl::unordered_map<std::string, LayerRenderData> renderData;

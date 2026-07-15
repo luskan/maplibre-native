@@ -42,6 +42,7 @@ public:
 
     std::unique_ptr<TileRenderData> createRenderData() override;
     void setLayers(const std::vector<Immutable<style::LayerProperties>>&) override;
+    void setLayers(const std::vector<Immutable<style::LayerProperties>>&, const TileParameters&) override;
     void setShowCollisionBoxes(bool showCollisionBoxes) override;
 
     void onGlyphsAvailable(GlyphMap, HBShapeRequests) override;
@@ -127,7 +128,9 @@ private:
 
     const MapMode mode;
 
-    const float evaluationZoomBiasStatic;
+    float paintZoomBias;
+    float layerZoomBias;
+    bool useLineWidthZoomCoveringStops;
 
     bool showCollisionBoxes;
 

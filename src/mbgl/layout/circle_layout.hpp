@@ -16,7 +16,7 @@ public:
                  std::unique_ptr<GeometryTileLayer> sourceLayer_)
         : sourceLayer(std::move(sourceLayer_)),
           zoom(parameters.tileID.overscaledZ),
-          paintZoomBias(parameters.evaluationZoomBiasStatic),
+          paintZoomBias(parameters.paintZoomBias),
           mode(parameters.mode) {
         assert(!group.empty());
         auto leaderLayerProperties = staticImmutableCast<style::CircleLayerProperties>(group.front());

@@ -37,7 +37,8 @@ GeometryTileWorker::GeometryTileWorker(ActorRef<GeometryTileWorker> self_,
                                        const std::atomic<bool>& obsolete_,
                                        const MapMode mode_,
                                        const float pixelRatio_,
-                                       const float evaluationZoomBiasStatic_,
+                                       const float paintZoomBias_,
+                                       const bool useLineWidthZoomCoveringStops_,
                                        const bool showCollisionBoxes_,
                                        gfx::DynamicTextureAtlasPtr dynamicTextureAtlas_,
                                        std::shared_ptr<FontFaces> fontFaces_)
@@ -49,7 +50,8 @@ GeometryTileWorker::GeometryTileWorker(ActorRef<GeometryTileWorker> self_,
       obsolete(obsolete_),
       mode(mode_),
       pixelRatio(pixelRatio_),
-      evaluationZoomBiasStatic(evaluationZoomBiasStatic_),
+      paintZoomBias(paintZoomBias_),
+      useLineWidthZoomCoveringStops(useLineWidthZoomCoveringStops_),
       showCollisionBoxes(showCollisionBoxes_),
       dynamicTextureAtlas(dynamicTextureAtlas_),
       fontFaces(fontFaces_) {}
@@ -160,6 +162,8 @@ void GeometryTileWorker::setData(std::unique_ptr<const GeometryTileData> data_,
 
 void GeometryTileWorker::setLayers(std::vector<Immutable<LayerProperties>> layers_,
                                    std::set<std::string> availableImages_,
+                                   const float paintZoomBias_,
+                                   const bool useLineWidthZoomCoveringStops_,
                                    uint64_t correlationID_) {
     MLN_TRACE_FUNC();
 
@@ -167,6 +171,8 @@ void GeometryTileWorker::setLayers(std::vector<Immutable<LayerProperties>> layer
         layers = std::move(layers_);
         correlationID = correlationID_;
         availableImages = std::move(availableImages_);
+        paintZoomBias = paintZoomBias_;
+        useLineWidthZoomCoveringStops = useLineWidthZoomCoveringStops_;
 
         switch (state) {
             case Idle:
@@ -451,7 +457,8 @@ void GeometryTileWorker::parse() {
         }
 
         const style::Layer::Impl& leaderImpl = *(group.at(0)->baseImpl);
-        BucketParameters parameters{id, mode, pixelRatio, leaderImpl.getTypeInfo(), evaluationZoomBiasStatic};
+        BucketParameters parameters{
+            id, mode, pixelRatio, leaderImpl.getTypeInfo(), paintZoomBias, useLineWidthZoomCoveringStops};
 
         auto geometryLayer = (*data)->getLayer(leaderImpl.sourceLayer);
         if (!geometryLayer) {

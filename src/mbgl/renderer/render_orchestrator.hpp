@@ -5,6 +5,7 @@
 #include <mbgl/renderer/renderer.hpp>
 #include <mbgl/renderer/render_source_observer.hpp>
 #include <mbgl/renderer/render_light.hpp>
+#include <mbgl/renderer/tile_parameters.hpp>
 #include <mbgl/style/image.hpp>
 #include <mbgl/style/source.hpp>
 #include <mbgl/style/layer.hpp>
@@ -18,6 +19,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -195,6 +197,8 @@ private:
 
     ZoomHistory zoomHistory;
     TransformState transformState;
+    GeometryTileZoomState lastGeometryTileZoomState;
+    bool geometryTileZoomStateInitialized = false;
 
     std::shared_ptr<GlyphManager> glyphManager;
     std::shared_ptr<ImageManager> imageManager;

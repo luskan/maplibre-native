@@ -51,6 +51,7 @@ public:
     // Keep these fields in the same order as Map::Impl::onUpdate.
     const float evaluationZoomBias = 0;
     const float evaluationZoomBiasStatic = 0;
+    const bool evaluationZoomBiasEnabled = false;
 
     double tileLodMinRadius = 3;
     double tileLodScale = 1;

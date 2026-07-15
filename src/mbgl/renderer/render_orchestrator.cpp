@@ -60,6 +60,18 @@ RendererObserver& nullObserver() {
     return observer;
 }
 
+bool usesGeometryTiles(const SourceType type) {
+    switch (type) {
+        case SourceType::Vector:
+        case SourceType::GeoJSON:
+        case SourceType::Annotations:
+        case SourceType::CustomVector:
+            return true;
+        default:
+            return false;
+    }
+}
+
 class RenderTreeImpl final : public RenderTree {
 public:
     RenderTreeImpl(std::unique_ptr<RenderTreeParameters> parameters_,
@@ -174,6 +186,15 @@ std::unique_ptr<RenderTree> RenderOrchestrator::createRenderTree(
                                                     updateParameters->evaluationZoomBias,
                                                 updateParameters->timePoint);
 
+    const auto geometryTileZoomState = calculateGeometryTileZoomState(zoomHistory.lastZoom,
+                                                                      updateParameters->evaluationZoomBiasEnabled,
+                                                                      updateParameters->evaluationZoomBiasStatic,
+                                                                      updateParameters->tileLodZoomShift);
+    const bool geometryTileZoomStateChanged = geometryTileZoomStateInitialized &&
+                                              lastGeometryTileZoomState != geometryTileZoomState;
+    geometryTileZoomStateInitialized = true;
+    lastGeometryTileZoomState = geometryTileZoomState;
+
     const TransitionOptions transitionOptions = isMapModeContinuous ? updateParameters->transitionOptions
                                                                     : TransitionOptions();
 
@@ -200,7 +221,7 @@ std::unique_ptr<RenderTree> RenderOrchestrator::createRenderTree(
                                         .tileLodPitchThreshold = updateParameters->tileLodPitchThreshold,
                                         .tileLodZoomShift = updateParameters->tileLodZoomShift,
                                         .dynamicTextureAtlas = dynamicTextureAtlas,
-                                        .evaluationZoomBiasStatic = updateParameters->evaluationZoomBiasStatic};
+                                        .geometryTileZoomState = geometryTileZoomState};
 
     glyphManager->setURL(updateParameters->glyphURL);
     glyphManager->setFontFaces(updateParameters->fontFaces);
@@ -369,7 +390,7 @@ std::unique_ptr<RenderTree> RenderOrchestrator::createRenderTree(
 
         RenderSource* source = renderSources.at(sourceImpl->id).get();
         bool sourceNeedsRendering = false;
-        bool sourceNeedsRelayout = false;
+        bool sourceNeedsRelayout = geometryTileZoomStateChanged && usesGeometryTiles(sourceImpl->type);
 
         for (std::size_t index = 0; index < orderedLayers.size(); ++index) {
             RenderLayer& layer = orderedLayers[index];

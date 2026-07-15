@@ -9,8 +9,11 @@
 #include <mbgl/util/containers.hpp>
 
 #include <list>
+#include <type_traits>
 
 namespace mbgl {
+
+class LineBucket;
 
 class PatternDependency {
 public:
@@ -97,7 +100,8 @@ public:
                   const LayoutParameters& layoutParameters)
         : sourceLayer(std::move(sourceLayer_)),
           zoom(parameters.tileID.overscaledZ),
-          paintZoomBias(parameters.evaluationZoomBiasStatic),
+          paintZoomBias(parameters.paintZoomBias),
+          useLineWidthZoomCoveringStops(parameters.useLineWidthZoomCoveringStops),
           overscaling(parameters.tileID.overscaleFactor()),
           hasPattern(false) {
         assert(!group.empty());
@@ -188,7 +192,14 @@ public:
                       const bool /*firstLoad*/,
                       const bool /*showCollisionBoxes*/,
                       const CanonicalTileID& canonical) override {
-        auto bucket = std::make_shared<BucketType>(layout, layerPropertiesMap, zoom, overscaling, paintZoomBias);
+        auto bucket = [&] {
+            if constexpr (std::is_same_v<BucketType, LineBucket>) {
+                return std::make_shared<BucketType>(
+                    layout, layerPropertiesMap, zoom, overscaling, paintZoomBias, useLineWidthZoomCoveringStops);
+            } else {
+                return std::make_shared<BucketType>(layout, layerPropertiesMap, zoom, overscaling, paintZoomBias);
+            }
+        }();
         for (auto& patternFeature : features) {
             const auto i = patternFeature.i;
             std::unique_ptr<GeometryTileFeature> feature = std::move(patternFeature.feature);
@@ -215,6 +226,7 @@ protected:
 
     const float zoom;
     const float paintZoomBias;
+    const bool useLineWidthZoomCoveringStops;
     const uint32_t overscaling;
     std::string sourceLayerID;
     bool hasPattern;
