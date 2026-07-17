@@ -131,13 +131,16 @@ void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON&
     auto featureData = CustomGeometryTile::processTileData(data, tileID, tileOptions);
     std::scoped_lock guard(dataMutex);
     auto iter = tileCallbackMap.find(tileID);
-    if (iter != tileCallbackMap.end()) {
+    // invalidateRegion clears vectors without erasing keys
+    const bool hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
+    if (hasActiveCallbacks) {
         for (const auto& tuple : iter->second) {
             auto actor = std::get<2>(tuple);
             actor.invoke(kSetProcessedTileData, featureData);
         }
     }
-    if (isCustomTileLoaderDataCacheEnabled()) {
+    // do not cache tiles nobody waits for, invalidation would never reach them
+    if (isCustomTileLoaderDataCacheEnabled() && hasActiveCallbacks) {
         const bool inserted = dataCache.find(tileID) == dataCache.end();
         dataCache[tileID] = std::move(featureData);
         if (inserted) {
@@ -158,7 +161,9 @@ void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::share
     std::lock_guard<std::mutex> guard(dataMutex);
     auto iter = tileCallbackMap.find(tileID);
     const auto callbackCount = iter != tileCallbackMap.end() ? iter->second.size() : 0;
-    if (iter != tileCallbackMap.end()) {
+    // invalidateRegion clears vectors without erasing keys
+    const bool hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
+    if (hasActiveCallbacks) {
         for (const auto& tuple : iter->second) {
             auto actor = std::get<2>(tuple);
             actor.invoke(kSetProcessedTileData, featureData);
@@ -175,7 +180,8 @@ void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::share
                              " cacheBefore=" + std::to_string(dataCache.size()));
         }
     }
-    if (isCustomTileLoaderDataCacheEnabled()) {
+    // do not cache tiles nobody waits for, invalidation would never reach them
+    if (isCustomTileLoaderDataCacheEnabled() && hasActiveCallbacks) {
         const bool inserted = dataCache.find(tileID) == dataCache.end();
         dataCache[tileID] = std::move(featureData);
         if (inserted) {
