@@ -1,4 +1,5 @@
 #include <mln/tile/geometry_tile_data.hpp>
+#include <mln/tile/geometry_tile_data_impl.hpp>
 #include <mln/tile/tile_id.hpp>
 #include <mln/math/angles.hpp>
 #include <mln/math/clamp.hpp>
@@ -16,12 +17,156 @@
 #pragma warning(pop)
 #endif
 
+#include <algorithm>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <numbers>
+
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 
 using namespace std::numbers;
 
 namespace mln {
 namespace {
+
+constexpr std::size_t maxSimpleRingVertices = 32;
+constexpr char simplePolygonFixupEnv[] = "AM_MAPLIBRE_SIMPLE_POLYGON_FIXUP";
+constexpr char validateSimplePolygonFixupEnv[] = "AM_MAPLIBRE_VALIDATE_SIMPLE_POLYGON_FIXUP";
+
+#ifdef __ANDROID__
+constexpr char simplePolygonFixupProperty[] = "debug.automapa.mln.simple_fixup";
+constexpr char validateSimplePolygonFixupProperty[] = "debug.automapa.mln.val_fixup";
+#endif
+
+bool parseRuntimeFlag(const char* value, bool defaultValue) noexcept {
+    if (value == nullptr || *value == '\0') return defaultValue;
+    if (std::strcmp(value, "0") == 0) return false;
+    if (std::strcmp(value, "1") == 0) return true;
+    return defaultValue;
+}
+
+bool loadRuntimeFlag(const char* environmentName,
+#ifdef __ANDROID__
+                     const char* propertyName,
+#endif
+                     bool defaultValue) noexcept {
+#ifdef __ANDROID__
+    char propertyValue[PROP_VALUE_MAX] = {};
+    if (__system_property_get(propertyName, propertyValue) > 0) {
+        return parseRuntimeFlag(propertyValue, defaultValue);
+    }
+#endif
+
+#ifdef _WIN32
+    char* environmentValue = nullptr;
+    std::size_t environmentValueSize = 0;
+    if (_dupenv_s(&environmentValue, &environmentValueSize, environmentName) != 0) return defaultValue;
+    const bool result = parseRuntimeFlag(environmentValue, defaultValue);
+    std::free(environmentValue);
+    return result;
+#else
+    return parseRuntimeFlag(std::getenv(environmentName), defaultValue);
+#endif
+}
+
+std::atomic_bool& simplePolygonFixupEnabledState() noexcept {
+    static std::atomic_bool enabled{loadRuntimeFlag(simplePolygonFixupEnv,
+#ifdef __ANDROID__
+                                                    simplePolygonFixupProperty,
+#endif
+                                                    true)};
+    return enabled;
+}
+
+std::int64_t crossProduct(const GeometryCoordinate& a, const GeometryCoordinate& b, const GeometryCoordinate& c) {
+    const auto abx = static_cast<std::int64_t>(b.x) - a.x;
+    const auto aby = static_cast<std::int64_t>(b.y) - a.y;
+    const auto acx = static_cast<std::int64_t>(c.x) - a.x;
+    const auto acy = static_cast<std::int64_t>(c.y) - a.y;
+    return abx * acy - aby * acx;
+}
+
+bool pointOnSegment(const GeometryCoordinate& point, const GeometryCoordinate& start, const GeometryCoordinate& end) {
+    return point.x >= std::min(start.x, end.x) && point.x <= std::max(start.x, end.x) &&
+           point.y >= std::min(start.y, end.y) && point.y <= std::max(start.y, end.y);
+}
+
+bool segmentsIntersect(const GeometryCoordinate& a,
+                       const GeometryCoordinate& b,
+                       const GeometryCoordinate& c,
+                       const GeometryCoordinate& d) {
+    const auto abc = crossProduct(a, b, c);
+    const auto abd = crossProduct(a, b, d);
+    const auto cda = crossProduct(c, d, a);
+    const auto cdb = crossProduct(c, d, b);
+
+    if (abc == 0 && pointOnSegment(c, a, b)) return true;
+    if (abd == 0 && pointOnSegment(d, a, b)) return true;
+    if (cda == 0 && pointOnSegment(a, c, d)) return true;
+    if (cdb == 0 && pointOnSegment(b, c, d)) return true;
+
+    return (abc > 0) != (abd > 0) && (cda > 0) != (cdb > 0);
+}
+
+bool hasSafeLineDistance(const GeometryCoordinate& point,
+                         const GeometryCoordinate& start,
+                         const GeometryCoordinate& end) {
+    const auto dx = std::abs(static_cast<std::int64_t>(end.x) - start.x);
+    const auto dy = std::abs(static_cast<std::int64_t>(end.y) - start.y);
+    // A distance greater than sqrt(2) keeps snap rounding away from unrelated edges.
+    return std::abs(crossProduct(start, end, point)) > 2 * std::max(dx, dy);
+}
+
+std::optional<GeometryCollection> tryFixupAxisAlignedRectangle(const GeometryCoordinates& ring, std::int64_t area) {
+    if (ring.size() != 5 || area == 0) return std::nullopt;
+
+    auto minX = ring.front().x;
+    auto maxX = ring.front().x;
+    auto minY = ring.front().y;
+    auto maxY = ring.front().y;
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto& current = ring[i];
+        const auto& next = ring[i + 1];
+        if ((current.x == next.x) == (current.y == next.y)) return std::nullopt;
+        minX = std::min(minX, current.x);
+        maxX = std::max(maxX, current.x);
+        minY = std::min(minY, current.y);
+        maxY = std::max(maxY, current.y);
+    }
+    if (minX == maxX || minY == maxY) return std::nullopt;
+
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto& point = ring[i];
+        if ((point.x != minX && point.x != maxX) || (point.y != minY && point.y != maxY)) {
+            return std::nullopt;
+        }
+    }
+
+    GeometryCoordinates outputRing;
+    outputRing.reserve(5);
+    if (area > 0) {
+        outputRing = {{maxX, minY}, {maxX, maxY}, {minX, maxY}, {minX, minY}, {maxX, minY}};
+    } else {
+        outputRing = {{minX, maxY}, {minX, minY}, {maxX, minY}, {maxX, maxY}, {minX, maxY}};
+    }
+
+    GeometryCollection result;
+    result.emplace_back(std::move(outputRing));
+    return result;
+}
+
+bool validateSimplePolygonFixup() {
+    // Set to 1 to compare each fast result with Wagyu before returning it.
+    static const bool enabled = loadRuntimeFlag(validateSimplePolygonFixupEnv,
+#ifdef __ANDROID__
+                                                validateSimplePolygonFixupProperty,
+#endif
+                                                false);
+    return enabled;
+}
 
 double signedArea(const GeometryCoordinates& ring) {
     double sum = 0;
@@ -57,9 +202,8 @@ GeometryCollection toGeometryCollection(MultiPolygon<int16_t>&& multipolygon) {
     }
     return result;
 }
-} // namespace
 
-GeometryCollection fixupPolygons(const GeometryCollection& rings) {
+GeometryCollection fixupPolygonsWithWagyu(const GeometryCollection& rings) {
     MLN_TRACE_FUNC();
 
     using namespace mapbox::geometry::wagyu;
@@ -74,6 +218,101 @@ GeometryCollection fixupPolygons(const GeometryCollection& rings) {
     clipper.execute(clip_type_union, multipolygon, fill_type_even_odd, fill_type_even_odd);
 
     return toGeometryCollection(std::move(multipolygon));
+}
+} // namespace
+
+namespace detail {
+
+bool isSimplePolygonFixupEnabled() noexcept {
+    return simplePolygonFixupEnabledState().load(std::memory_order_relaxed);
+}
+
+void setSimplePolygonFixupEnabled(bool enabled) noexcept {
+    simplePolygonFixupEnabledState().store(enabled, std::memory_order_relaxed);
+}
+
+std::optional<GeometryCollection> tryFixupSimplePolygon(const GeometryCollection& rings) {
+    if (rings.size() != 1) return std::nullopt;
+
+    const auto& ring = rings.front();
+    if (ring.size() < 4 || ring.size() > maxSimpleRingVertices + 1 || ring.front() != ring.back()) {
+        return std::nullopt;
+    }
+
+    const std::size_t vertexCount = ring.size() - 1;
+    std::size_t lowestVertex = 0;
+    bool lowestVertexIsUnique = true;
+    std::int64_t area = 0;
+
+    for (std::size_t i = 0; i < vertexCount; ++i) {
+        const auto& current = ring[i];
+        const auto& next = ring[(i + 1) % vertexCount];
+        const auto& previous = ring[(i + vertexCount - 1) % vertexCount];
+
+        if (current.y < ring[lowestVertex].y) {
+            lowestVertex = i;
+            lowestVertexIsUnique = true;
+        } else if (i != lowestVertex && current.y == ring[lowestVertex].y) {
+            lowestVertexIsUnique = false;
+        }
+
+        if (crossProduct(previous, current, next) == 0) return std::nullopt;
+
+        area += static_cast<std::int64_t>(current.x) * next.y - static_cast<std::int64_t>(next.x) * current.y;
+
+        for (std::size_t j = 0; j < i; ++j) {
+            if (ring[j] == current) return std::nullopt;
+        }
+    }
+
+    if (!lowestVertexIsUnique) return tryFixupAxisAlignedRectangle(ring, area);
+    if (area == 0) return std::nullopt;
+
+    for (std::size_t i = 0; i < vertexCount; ++i) {
+        const std::size_t iNext = (i + 1) % vertexCount;
+        for (std::size_t j = i + 1; j < vertexCount; ++j) {
+            const std::size_t jNext = (j + 1) % vertexCount;
+            if (iNext == j || jNext == i) continue;
+            if (segmentsIntersect(ring[i], ring[iNext], ring[j], ring[jNext])) return std::nullopt;
+        }
+
+        for (std::size_t j = 0; j < vertexCount; ++j) {
+            const std::size_t jNext = (j + 1) % vertexCount;
+            if (j == i || jNext == i) continue;
+            if (!hasSafeLineDistance(ring[i], ring[j], ring[jNext])) return std::nullopt;
+        }
+    }
+
+    GeometryCoordinates outputRing;
+    outputRing.reserve(ring.size());
+    for (std::size_t i = 0; i < vertexCount; ++i) {
+        const std::size_t index = area > 0 ? (lowestVertex + i) % vertexCount
+                                           : (lowestVertex + vertexCount - i) % vertexCount;
+        outputRing.emplace_back(ring[index]);
+    }
+    outputRing.emplace_back(outputRing.front());
+
+    GeometryCollection result;
+    result.emplace_back(std::move(outputRing));
+    return result;
+}
+
+} // namespace detail
+
+GeometryCollection fixupPolygons(const GeometryCollection& rings) {
+    MLN_TRACE_FUNC();
+
+    if (detail::isSimplePolygonFixupEnabled()) {
+        if (auto result = detail::tryFixupSimplePolygon(rings)) {
+            if (validateSimplePolygonFixup()) {
+                auto reference = fixupPolygonsWithWagyu(rings);
+                if (*result != reference) std::abort();
+            }
+            return std::move(*result);
+        }
+    }
+
+    return fixupPolygonsWithWagyu(rings);
 }
 
 std::vector<GeometryCollection> classifyRings(const GeometryCollection& rings) {

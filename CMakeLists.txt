@@ -897,6 +897,7 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_data.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_data.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_data_impl.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_worker.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_worker.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/raster_dem_tile.cpp

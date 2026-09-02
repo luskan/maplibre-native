@@ -515,6 +515,7 @@ MLN_CORE_SOURCE = [
     "src/mln/tile/geometry_tile.hpp",
     "src/mln/tile/geometry_tile_data.cpp",
     "src/mln/tile/geometry_tile_data.hpp",
+    "src/mln/tile/geometry_tile_data_impl.hpp",
     "src/mln/tile/geometry_tile_worker.cpp",
     "src/mln/tile/geometry_tile_worker.hpp",
     "src/mln/tile/raster_dem_tile.cpp",
