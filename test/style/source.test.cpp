@@ -81,7 +81,8 @@ public:
                 .glyphManager = glyphManager,
                 .prefetchZoomDelta = 0,
                 .threadPool = threadPool,
-                .dynamicTextureAtlas = dynamicTextureAtlas};
+                .dynamicTextureAtlas = dynamicTextureAtlas,
+                .geometryTileZoomState = {}};
     };
 
     SourceTest()

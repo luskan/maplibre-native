@@ -41,7 +41,8 @@ public:
                          .glyphManager = glyphManager,
                          .prefetchZoomDelta = 0,
                          .threadPool = {Scheduler::GetBackground(), uniqueID},
-                         .dynamicTextureAtlas = dynamicTextureAtlas},
+                         .dynamicTextureAtlas = dynamicTextureAtlas,
+                         .geometryTileZoomState = {}},
           style{fileSource, 1, tileParameters.threadPool} {}
 };
 

@@ -1,8 +1,6 @@
 #include <mln/style/custom_tile_loader.hpp>
 #include <mln/style/custom_tile_loader_cache.hpp>
 #include <mln/tile/custom_geometry_tile.hpp>
-#include <mln/util/logging.hpp>
-#include <mln/util/string.hpp>
 #include <mln/util/tile_range.hpp>
 
 #include <atomic>
@@ -15,14 +13,6 @@ namespace {
 constexpr auto kSetProcessedTileData =
     static_cast<void (CustomGeometryTile::*)(CustomGeometryTile::TileFeatureCollectionPtr)>(
         &CustomGeometryTile::setTileData);
-
-bool shouldLogTileDiagnostic(size_t count) {
-    return count > 0 && (count <= 50 || (count % 100) == 0);
-}
-
-bool isAutomapaDiagnosticSource(const std::string& sourceID) {
-    return sourceID.rfind("automapa-", 0) == 0;
-}
 
 std::atomic<bool> g_dataCacheEnabled{true};
 std::atomic<uint64_t> g_dataCacheHits{0};
@@ -65,12 +55,10 @@ CustomTileLoaderDataCacheStats getCustomTileLoaderDataCacheStats() {
     return stats;
 }
 
-CustomTileLoader::CustomTileLoader(std::string sourceID_,
-                                   const TileFunction& fetchTileFn,
+CustomTileLoader::CustomTileLoader(const TileFunction& fetchTileFn,
                                    const TileFunction& cancelTileFn,
                                    const CustomGeometrySource::TileOptions& tileOptions_)
-    : sourceID(std::move(sourceID_)),
-      tileOptions(tileOptions_) {
+    : tileOptions(tileOptions_) {
     fetchTileFunction = fetchTileFn;
     cancelTileFunction = cancelTileFn;
 }
@@ -128,69 +116,83 @@ void CustomTileLoader::removeTile(const OverscaledTileID& tileID) {
 }
 
 void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON& data) {
-    auto featureData = CustomGeometryTile::processTileData(data, tileID, tileOptions);
-    std::scoped_lock guard(dataMutex);
-    auto iter = tileCallbackMap.find(tileID);
-    // invalidateRegion clears vectors without erasing keys
-    const bool hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
-    if (hasActiveCallbacks) {
-        for (const auto& tuple : iter->second) {
-            auto actor = std::get<2>(tuple);
-            actor.invoke(kSetProcessedTileData, featureData);
+    bool hasActiveCallbacks = false;
+    {
+        std::lock_guard<std::mutex> guard(dataMutex);
+        const auto iter = tileCallbackMap.find(tileID);
+        hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
+        if (!hasActiveCallbacks) {
+            eraseCachedTile(dataCache, tileID);
         }
     }
-    // do not cache tiles nobody waits for, invalidation would never reach them
-    if (isCustomTileLoaderDataCacheEnabled() && hasActiveCallbacks) {
-        const bool inserted = dataCache.find(tileID) == dataCache.end();
-        dataCache[tileID] = std::move(featureData);
-        if (inserted) {
-            g_dataCacheTileCount.fetch_add(1, std::memory_order_relaxed);
-        }
-        g_dataCacheStores.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        eraseCachedTile(dataCache, tileID);
+    if (!hasActiveCallbacks) {
         g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    auto featureData = CustomGeometryTile::processTileData(data, tileID, tileOptions);
+    std::vector<OverscaledIDFunctionTuple> callbacks;
+    {
+        std::lock_guard<std::mutex> guard(dataMutex);
+        const auto iter = tileCallbackMap.find(tileID);
+        if (iter != tileCallbackMap.end()) {
+            callbacks = iter->second;
+        }
+        if (isCustomTileLoaderDataCacheEnabled() && !callbacks.empty()) {
+            const bool inserted = dataCache.find(tileID) == dataCache.end();
+            dataCache[tileID] = featureData;
+            if (inserted) {
+                g_dataCacheTileCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            g_dataCacheStores.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            eraseCachedTile(dataCache, tileID);
+            g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    for (const auto& tuple : callbacks) {
+        std::get<2>(tuple).invoke(kSetProcessedTileData, featureData);
     }
 }
 
 void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::shared_ptr<const FeatureCollection> data) {
-    const auto inputFeatureCount = data ? data->size() : 0;
-    auto featureData = data ? CustomGeometryTile::processTileData(*data, tileID, tileOptions)
-                            : std::make_shared<const TileFeatureCollection>();
-    const auto processedFeatureCount = featureData ? featureData->size() : 0;
-    std::lock_guard<std::mutex> guard(dataMutex);
-    auto iter = tileCallbackMap.find(tileID);
-    const auto callbackCount = iter != tileCallbackMap.end() ? iter->second.size() : 0;
-    // invalidateRegion clears vectors without erasing keys
-    const bool hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
-    if (hasActiveCallbacks) {
-        for (const auto& tuple : iter->second) {
-            auto actor = std::get<2>(tuple);
-            actor.invoke(kSetProcessedTileData, featureData);
-        }
-    } else if (isAutomapaDiagnosticSource(sourceID)) {
-        const auto count = ++noCallbackDataLogCount;
-        if (shouldLogTileDiagnostic(count)) {
-            Log::Warning(Event::General,
-                         "[MLTileData] source=" + sourceID + " reason=no-active-callback count=" +
-                             std::to_string(count) + " tile=" + util::toString(tileID) +
-                             " inputFeatures=" + std::to_string(inputFeatureCount) +
-                             " processedFeatures=" + std::to_string(processedFeatureCount) +
-                             " callbacks=" + std::to_string(callbackCount) +
-                             " cacheBefore=" + std::to_string(dataCache.size()));
+    bool hasActiveCallbacks = false;
+    {
+        std::lock_guard<std::mutex> guard(dataMutex);
+        const auto iter = tileCallbackMap.find(tileID);
+        hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
+        if (!hasActiveCallbacks) {
+            eraseCachedTile(dataCache, tileID);
         }
     }
-    // do not cache tiles nobody waits for, invalidation would never reach them
-    if (isCustomTileLoaderDataCacheEnabled() && hasActiveCallbacks) {
-        const bool inserted = dataCache.find(tileID) == dataCache.end();
-        dataCache[tileID] = std::move(featureData);
-        if (inserted) {
-            g_dataCacheTileCount.fetch_add(1, std::memory_order_relaxed);
-        }
-        g_dataCacheStores.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        eraseCachedTile(dataCache, tileID);
+    if (!hasActiveCallbacks) {
         g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    auto featureData = data ? CustomGeometryTile::processTileData(*data, tileID, tileOptions)
+                            : std::make_shared<const TileFeatureCollection>();
+    std::vector<OverscaledIDFunctionTuple> callbacks;
+    {
+        std::lock_guard<std::mutex> guard(dataMutex);
+        const auto iter = tileCallbackMap.find(tileID);
+        if (iter != tileCallbackMap.end()) {
+            callbacks = iter->second;
+        }
+        if (isCustomTileLoaderDataCacheEnabled() && !callbacks.empty()) {
+            const bool inserted = dataCache.find(tileID) == dataCache.end();
+            dataCache[tileID] = featureData;
+            if (inserted) {
+                g_dataCacheTileCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            g_dataCacheStores.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            eraseCachedTile(dataCache, tileID);
+            g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    for (const auto& tuple : callbacks) {
+        std::get<2>(tuple).invoke(kSetProcessedTileData, featureData);
     }
 }
 

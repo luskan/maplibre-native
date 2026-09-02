@@ -9,7 +9,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <unordered_map>
 
 namespace mln {
@@ -27,8 +26,7 @@ public:
 
     using OverscaledIDFunctionTuple = std::tuple<uint8_t, int16_t, ActorRef<CustomGeometryTile>>;
 
-    CustomTileLoader(std::string sourceID,
-                     const TileFunction& fetchTileFn,
+    CustomTileLoader(const TileFunction& fetchTileFn,
                      const TileFunction& cancelTileFn,
                      const CustomGeometrySource::TileOptions& tileOptions = {});
 
@@ -49,9 +47,7 @@ private:
 
     TileFunction fetchTileFunction;
     TileFunction cancelTileFunction;
-    std::string sourceID;
     CustomGeometrySource::TileOptions tileOptions;
-    size_t noCallbackDataLogCount = 0;
     std::unordered_map<CanonicalTileID, std::vector<OverscaledIDFunctionTuple>> tileCallbackMap;
     // Keep around processed tile-local geometry to serve back for wrapped and over-zoomed tiles.
     std::map<CanonicalTileID, TileFeatureCollectionPtr> dataCache;

@@ -4,6 +4,7 @@
 #include <mln/style/sources/custom_geometry_source.hpp>
 #include <mln/tile/custom_geometry_tile.hpp>
 #include <mln/style/custom_tile_loader.hpp>
+#include <mln/style/custom_tile_loader_cache.hpp>
 
 #include <mln/util/run_loop.hpp>
 #include <mln/map/transform.hpp>
@@ -46,7 +47,8 @@ public:
                          .glyphManager = glyphManager,
                          .prefetchZoomDelta = 0,
                          .threadPool = {Scheduler::GetBackground(), uniqueID},
-                         .dynamicTextureAtlas = dynamicTextureAtlas},
+                         .dynamicTextureAtlas = dynamicTextureAtlas,
+                         .geometryTileZoomState = {}},
           style{fileSource, 1, tileParameters.threadPool} {}
 };
 
@@ -176,4 +178,81 @@ TEST(CustomGeometryTile, InvokeTileChangedProcessedFeatures) {
     while (!tile.isComplete()) {
         test.loop.runOnce();
     }
+}
+
+TEST(CustomGeometryTile, AbandonedFeatureCompletionRequiresFreshFetch) {
+    CustomTileTest test;
+    std::size_t fetchCount = 0;
+    CustomTileLoader loader(
+        [&](const CanonicalTileID&) { ++fetchCount; }, nullptr);
+    auto loaderMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+    ActorRef<CustomTileLoader> loaderActor(loader, loaderMailbox);
+    const OverscaledTileID tileID(0, 0, 0);
+    CustomGeometryTile first(tileID,
+                             "source",
+                             test.tileParameters,
+                             makeMutable<CustomGeometrySource::TileOptions>(),
+                             loaderActor);
+    CustomGeometryTile second(tileID,
+                              "source",
+                              test.tileParameters,
+                              makeMutable<CustomGeometrySource::TileOptions>(),
+                              loaderActor);
+    auto firstMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+    auto secondMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+    ActorRef<CustomGeometryTile> firstActor(first, firstMailbox);
+    ActorRef<CustomGeometryTile> secondActor(second, secondMailbox);
+
+    loader.fetchTile(tileID, firstActor);
+    EXPECT_EQ(1u, fetchCount);
+    loader.removeTile(tileID);
+
+    auto features = std::make_shared<FeatureCollection>();
+    features->emplace_back(mapbox::geometry::point<double>(0, 0));
+    const auto beforeAbandonment = getCustomTileLoaderDataCacheStats();
+    loader.setTileFeatures(tileID.canonical, features);
+    const auto afterAbandonment = getCustomTileLoaderDataCacheStats();
+    EXPECT_EQ(beforeAbandonment.stores, afterAbandonment.stores);
+    EXPECT_EQ(beforeAbandonment.bypasses + 1, afterAbandonment.bypasses);
+
+    loader.fetchTile(tileID, secondActor);
+    EXPECT_EQ(2u, fetchCount);
+    loader.setTileFeatures(tileID.canonical, features);
+    const auto afterFreshCompletion = getCustomTileLoaderDataCacheStats();
+    EXPECT_EQ(afterAbandonment.stores + 1, afterFreshCompletion.stores);
+    firstMailbox->close();
+    secondMailbox->close();
+}
+
+TEST(CustomGeometryTile, AbandonedGeoJSONCompletionRequiresFreshFetch) {
+    CustomTileTest test;
+    std::size_t fetchCount = 0;
+    CustomTileLoader loader(
+        [&](const CanonicalTileID&) { ++fetchCount; }, nullptr);
+    auto loaderMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+    ActorRef<CustomTileLoader> loaderActor(loader, loaderMailbox);
+    const OverscaledTileID tileID(0, 0, 0);
+    CustomGeometryTile tile(tileID,
+                            "source",
+                            test.tileParameters,
+                            makeMutable<CustomGeometrySource::TileOptions>(),
+                            loaderActor);
+    auto tileMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+    ActorRef<CustomGeometryTile> tileActor(tile, tileMailbox);
+    FeatureCollection features;
+    features.emplace_back(mapbox::geometry::point<double>(0, 0));
+    GeoJSON data{features};
+
+    const auto beforeAbandonment = getCustomTileLoaderDataCacheStats();
+    loader.setTileData(tileID.canonical, data);
+    const auto afterAbandonment = getCustomTileLoaderDataCacheStats();
+    EXPECT_EQ(beforeAbandonment.stores, afterAbandonment.stores);
+    EXPECT_EQ(beforeAbandonment.bypasses + 1, afterAbandonment.bypasses);
+
+    loader.fetchTile(tileID, tileActor);
+    EXPECT_EQ(1u, fetchCount);
+    loader.setTileData(tileID.canonical, data);
+    const auto afterFreshCompletion = getCustomTileLoaderDataCacheStats();
+    EXPECT_EQ(afterAbandonment.stores + 1, afterFreshCompletion.stores);
+    tileMailbox->close();
 }
