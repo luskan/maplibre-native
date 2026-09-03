@@ -6,24 +6,23 @@
 #include <mln/util/string.hpp>
 #include <mln/tile/tile_observer.hpp>
 #include <mln/style/custom_tile_loader.hpp>
+#include <mln/style/custom_tile_conversion.hpp>
 
 #include <mapbox/geojsonvt.hpp>
 
-#include <cassert>
 #include <utility>
 
 namespace mln {
 
 namespace {
 
-mapbox::geojsonvt::TileOptions makeVTOptions(const style::CustomGeometrySource::TileOptions& options) {
-    auto scale = util::EXTENT / options.tileSize;
-    assert(util::EXTENT % options.tileSize == 0);
+mapbox::geojsonvt::TileOptions makeVTOptions(const style::CustomGeometrySource::TileOptions& options, uint8_t z) {
+    const auto spec = style::customTileConversionSpec(options, z);
 
     mapbox::geojsonvt::TileOptions vtOptions;
-    vtOptions.extent = util::EXTENT;
-    vtOptions.buffer = static_cast<uint16_t>(::round(scale * options.buffer));
-    vtOptions.tolerance = scale * options.tolerance;
+    vtOptions.extent = spec.extent;
+    vtOptions.buffer = spec.buffer;
+    vtOptions.tolerance = spec.tolerance;
     return vtOptions;
 }
 
@@ -64,7 +63,7 @@ CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData
                                          tileID.z,
                                          tileID.x,
                                          tileID.y,
-                                         makeVTOptions(tileOptions),
+                                         makeVTOptions(tileOptions, tileID.z),
                                          tileOptions.wrap,
                                          tileOptions.clip)
                                          .features);
@@ -83,7 +82,7 @@ CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData
                                          tileID.z,
                                          tileID.x,
                                          tileID.y,
-                                         makeVTOptions(tileOptions),
+                                         makeVTOptions(tileOptions, tileID.z),
                                          tileOptions.wrap,
                                          tileOptions.clip)
                                          .features);
