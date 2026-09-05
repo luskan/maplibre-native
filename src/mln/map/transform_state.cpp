@@ -221,7 +221,7 @@ void TransformState::getProjMatrix(mat4& projMatrix, uint16_t nearZ, bool aligne
     // Additionally, we adjust by half a pixel in either direction in case that
     // viewport dimension is an odd integer to preserve rendering to the pixel
     // grid. We're rotating this shift based on the angle of the transformation
-    // so that 0°, 90°, 180°, and 270° rasters are crisp, and adjust the shift
+    // so that rasters at 0, 90, 180, and 270 degrees are crisp, and adjust the shift
     // so that it is always <= 0.5 pixels.
 
     if (aligned) {
@@ -717,10 +717,11 @@ float TransformState::getCameraToCenterDistance() const {
 }
 
 bool TransformState::setFieldOfViewOverride(double val) {
-    constexpr double minFov = 10.0 * pi / 180.0;
-    constexpr double maxFov = 120.0 * pi / 180.0;
-    const double sanitized = (std::isfinite(val) && val > 0.0) ? std::clamp(val, minFov, maxFov)
-                                                               : util::DEFAULT_FOV;
+    constexpr double minOverrideFov = 10.0 * pi / 180.0;
+    constexpr double maxOverrideFov = 120.0 * pi / 180.0;
+    const double sanitized = (std::isfinite(val) && val > 0.0)
+                                 ? std::clamp(val, minOverrideFov, maxOverrideFov)
+                                 : util::DEFAULT_FOV;
     if (fov == sanitized) {
         return false;
     }

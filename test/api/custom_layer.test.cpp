@@ -16,6 +16,7 @@
 #include <mln/util/run_loop.hpp>
 
 #include <memory>
+#include <stdexcept>
 
 using namespace mln;
 using namespace mln::style;
@@ -112,6 +113,60 @@ TEST(CustomLayer, Basic) {
     map.getStyle().addLayer(std::move(layer));
 
     test::checkImage("test/fixtures/custom_layer/basic", frontend.render(map).image, 0.0006, 0.1);
+}
+
+TEST(CustomLayer, FailedInitializationDoesNotRender) {
+    if (gfx::Backend::GetType() != gfx::Backend::Type::OpenGL) {
+        return;
+    }
+
+    class FailingHost final : public CustomLayerHost {
+    public:
+        void initialize(const CustomLayerInitParameters&) override {
+            ++initializationAttempts;
+            if (failInitialization) {
+                throw std::runtime_error("custom layer initialization failed");
+            }
+        }
+        void render(const CustomLayerRenderParameters&) override { ++renderCalls; }
+        void contextLost() override {}
+        void deinitialize() override {}
+
+        bool failInitialization = true;
+        unsigned initializationAttempts = 0;
+        unsigned renderCalls = 0;
+    };
+
+    util::RunLoop loop;
+    HeadlessFrontend frontend{1};
+    Map map(frontend,
+            MapObserver::nullObserver(),
+            MapOptions().withMapMode(MapMode::Static).withSize(frontend.getSize()),
+            ResourceOptions().withCachePath(":memory:"));
+    map.getStyle().loadJSON(R"({"version":8,"sources":{},"layers":[]})");
+
+    auto host = std::make_unique<FailingHost>();
+    auto* hostState = host.get();
+    map.getStyle().addLayer(std::make_unique<CustomLayer>("custom", std::move(host)));
+    frontend.render(map);
+    EXPECT_GT(hostState->initializationAttempts, 0u);
+    EXPECT_EQ(hostState->renderCalls, 0u);
+
+    hostState->failInitialization = false;
+    frontend.render(map);
+    EXPECT_GT(hostState->renderCalls, 0u);
+
+    map.getStyle().removeLayer("custom");
+    auto replacement = std::make_unique<FailingHost>();
+    auto* replacementState = replacement.get();
+    map.getStyle().addLayer(std::make_unique<CustomLayer>("custom", std::move(replacement)));
+    frontend.render(map);
+    EXPECT_GT(replacementState->initializationAttempts, 0u);
+    EXPECT_EQ(replacementState->renderCalls, 0u);
+
+    replacementState->failInitialization = false;
+    frontend.render(map);
+    EXPECT_GT(replacementState->renderCalls, 0u);
 }
 
 #endif

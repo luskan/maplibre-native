@@ -174,6 +174,10 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
 
 void RenderCustomLayer::render([[maybe_unused]] PaintParameters& paintParameters) {
 #if MLN_RENDER_BACKEND_OPENGL
+    if (needsInitialize) {
+        return;
+    }
+
     auto& context = paintParameters.context;
     context.resetState(paintParameters.depthModeForSublayer(0, gfx::DepthMaskType::ReadOnly),
                        paintParameters.colorModeForRenderPass());
