@@ -1213,6 +1213,7 @@ set(EXPORT_TARGETS
     mbgl-vendor-vector-tile
     mbgl-vendor-wagyu
     mlt-cpp
+    fastpfor-lib
     unordered_dense
 )
 
