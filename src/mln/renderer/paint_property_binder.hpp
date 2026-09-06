@@ -758,6 +758,7 @@ public:
                              const GeometryTileLayer& layer,
                              const ImagePositions& imagePositions) {
         util::ignore({(binders.template get<Ps>()->updateVertexVectors(states, layer, imagePositions), 0)...});
+        // set() writes straight into the buffer memory and does not mark it dirty, so force here.
         interleavedVertexBuffer.sharedVertexVector->updateModified(true);
     }
 
@@ -765,7 +766,9 @@ public:
                               const std::optional<ImagePosition>& posB,
                               const CrossfadeParameters& crossfade) {
         util::ignore({(binders.template get<Ps>()->setPatternParameters(posA, posB, crossfade), 0)...});
-        interleavedVertexBuffer.sharedVertexVector->updateModified(true);
+        // Binders only store pattern positions and crossfade here, they never write vertex
+        // data, so forcing a bump would re-upload the whole buffer every frame for nothing.
+        interleavedVertexBuffer.sharedVertexVector->updateModified();
     }
 
     template <class P>
