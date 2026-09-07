@@ -42,12 +42,13 @@ CustomGeometryTile::CustomGeometryTile(const OverscaledTileID& overscaledTileID,
       necessity(TileNecessity::Optional),
       options(std::move(options_)),
       loader(std::move(loader_)),
+      registrationToken(style::nextCustomTileRegistrationToken()),
       mailbox(std::make_shared<Mailbox>(*Scheduler::GetCurrent())),
       actorRef(*this, mailbox) {}
 
 CustomGeometryTile::~CustomGeometryTile() {
     mailbox->close();  // Prevent messages from being delivered to destroyed tile (UAF fix)
-    loader.invoke(&style::CustomTileLoader::removeTile, id);
+    loader.invoke(&style::CustomTileLoader::removeTile, id, registrationToken);
 }
 
 CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData(
@@ -110,11 +111,11 @@ void CustomGeometryTile::setNecessity(TileNecessity newNecessity) {
         necessity = newNecessity;
         if (necessity == TileNecessity::Required) {
             if (stale || !isRenderable()) {
-                loader.invoke(&style::CustomTileLoader::fetchTile, id, actorRef);
+                loader.invoke(&style::CustomTileLoader::fetchTile, id, actorRef, registrationToken);
             }
             stale = false;
         } else if (!isRenderable()) {
-            loader.invoke(&style::CustomTileLoader::cancelTile, id);
+            loader.invoke(&style::CustomTileLoader::cancelTile, id, registrationToken);
         }
     }
 }

@@ -3,6 +3,7 @@
 #include <mln/tile/custom_geometry_tile.hpp>
 #include <mln/util/tile_range.hpp>
 
+#include <algorithm>
 #include <atomic>
 
 namespace mln {
@@ -19,6 +20,13 @@ std::atomic<uint64_t> g_dataCacheHits{0};
 std::atomic<uint64_t> g_dataCacheStores{0};
 std::atomic<uint64_t> g_dataCacheBypasses{0};
 std::atomic<std::size_t> g_dataCacheTileCount{0};
+
+std::atomic<uint64_t> g_registrationToken{0};
+std::atomic<uint64_t> g_staleRemovesIgnored{0};
+std::atomic<uint64_t> g_staleCancelsIgnored{0};
+std::atomic<uint64_t> g_cancelsSuppressed{0};
+std::atomic<uint64_t> g_fetchesIssued{0};
+std::atomic<uint64_t> g_maxSharedTileIdDepth{0};
 
 void eraseCachedTile(std::map<CanonicalTileID, CustomTileLoader::TileFeatureCollectionPtr>& dataCache,
                      const CanonicalTileID& tileID) {
@@ -45,6 +53,20 @@ bool isCustomTileLoaderDataCacheEnabled() {
     return g_dataCacheEnabled.load(std::memory_order_acquire);
 }
 
+CustomTileRegistrationToken nextCustomTileRegistrationToken() {
+    return g_registrationToken.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+CustomTileLoaderRegistrationStats getCustomTileLoaderRegistrationStats() {
+    CustomTileLoaderRegistrationStats stats;
+    stats.staleRemovesIgnored = g_staleRemovesIgnored.load(std::memory_order_relaxed);
+    stats.staleCancelsIgnored = g_staleCancelsIgnored.load(std::memory_order_relaxed);
+    stats.cancelsSuppressed = g_cancelsSuppressed.load(std::memory_order_relaxed);
+    stats.fetchesIssued = g_fetchesIssued.load(std::memory_order_relaxed);
+    stats.maxSharedTileIdDepth = g_maxSharedTileIdDepth.load(std::memory_order_relaxed);
+    return stats;
+}
+
 CustomTileLoaderDataCacheStats getCustomTileLoaderDataCacheStats() {
     CustomTileLoaderDataCacheStats stats;
     stats.enabled = isCustomTileLoaderDataCacheEnabled();
@@ -63,7 +85,9 @@ CustomTileLoader::CustomTileLoader(const TileFunction& fetchTileFn,
     cancelTileFunction = cancelTileFn;
 }
 
-void CustomTileLoader::fetchTile(const OverscaledTileID& tileID, const ActorRef<CustomGeometryTile>& tileRef) {
+void CustomTileLoader::fetchTile(const OverscaledTileID& tileID,
+                                const ActorRef<CustomGeometryTile>& tileRef,
+                                RegistrationToken token) {
     std::scoped_lock guard(dataMutex);
     const bool cacheEnabled = isCustomTileLoaderDataCacheEnabled();
     auto cachedTileData = cacheEnabled ? dataCache.find(tileID.canonical) : dataCache.end();
@@ -73,46 +97,109 @@ void CustomTileLoader::fetchTile(const OverscaledTileID& tileID, const ActorRef<
     } else if (!cacheEnabled) {
         g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
     }
-    auto tileCallbacks = tileCallbackMap.find(tileID.canonical);
-    if (tileCallbacks == tileCallbackMap.end()) {
-        auto tuple = std::make_tuple(tileID.overscaledZ, tileID.wrap, tileRef);
-        tileCallbackMap.insert({tileID.canonical, std::vector<OverscaledIDFunctionTuple>(1, tuple)});
+
+    auto& entry = tileCallbackMap[tileID.canonical];
+    auto registration = std::find_if(entry.registrations.begin(),
+                                     entry.registrations.end(),
+                                     [token](const TileRegistration& candidate) {
+                                         return candidate.token == token;
+                                     });
+    if (registration == entry.registrations.end()) {
+        entry.registrations.push_back(
+            TileRegistration{tileID.overscaledZ, tileID.wrap, token, tileRef, true});
+        // Count how deep one tile ID gets shared. More than one receiver for the
+        // same zoom and wrap means a tile was replaced before its twin went away.
+        const auto sameTileId = std::count_if(entry.registrations.begin(),
+                                              entry.registrations.end(),
+                                              [&tileID](const TileRegistration& candidate) {
+                                                  return candidate.overscaledZ == tileID.overscaledZ &&
+                                                         candidate.wrap == tileID.wrap;
+                                              });
+        auto depth = static_cast<uint64_t>(sameTileId);
+        auto known = g_maxSharedTileIdDepth.load(std::memory_order_relaxed);
+        while (depth > known && !g_maxSharedTileIdDepth.compare_exchange_weak(known, depth)) {
+        }
     } else {
-        for (auto& iter : tileCallbacks->second) {
-            if (std::get<0>(iter) == tileID.overscaledZ && std::get<1>(iter) == tileID.wrap) {
-                std::get<2>(iter) = tileRef;
-                return;
-            }
-        }
-        tileCallbacks->second.emplace_back(std::make_tuple(tileID.overscaledZ, tileID.wrap, tileRef));
+        registration->tileRef = tileRef;
+        registration->wantsData = true;
     }
-    if (cachedTileData == dataCache.end()) {
-        invokeTileFetch(tileID.canonical);
+
+    if (cachedTileData != dataCache.end()) {
+        return;
     }
+    // Always ask the producer on a miss. Suppressing the call would mean trusting
+    // an earlier fetch that may already have been cancelled or dropped, and the
+    // producer is the only side that knows whether work is still queued.
+    entry.producerWanted = true;
+    g_fetchesIssued.fetch_add(1, std::memory_order_relaxed);
+    invokeTileFetch(tileID.canonical);
 }
 
-void CustomTileLoader::cancelTile(const OverscaledTileID& tileID) {
+void CustomTileLoader::cancelTile(const OverscaledTileID& tileID, RegistrationToken token) {
     std::scoped_lock guard(dataMutex);
-    if (tileCallbackMap.contains(tileID.canonical)) {
-        invokeTileCancel(tileID.canonical);
+    auto entry = tileCallbackMap.find(tileID.canonical);
+    if (entry == tileCallbackMap.end()) return;
+    auto registration = std::find_if(entry->second.registrations.begin(),
+                                     entry->second.registrations.end(),
+                                     [token](const TileRegistration& candidate) {
+                                         return candidate.token == token;
+                                     });
+    if (registration == entry->second.registrations.end()) {
+        g_staleCancelsIgnored.fetch_add(1, std::memory_order_relaxed);
+        return;
     }
+    // Keep the registration, the tile can become required again.
+    registration->wantsData = false;
+    releaseProducerIfUnwanted(tileID.canonical, entry->second);
 }
 
-void CustomTileLoader::removeTile(const OverscaledTileID& tileID) {
+void CustomTileLoader::removeTile(const OverscaledTileID& tileID, RegistrationToken token) {
     std::scoped_lock guard(dataMutex);
-    auto tileCallbacks = tileCallbackMap.find(tileID.canonical);
-    if (tileCallbacks == tileCallbackMap.end()) return;
-    for (auto iter = tileCallbacks->second.begin(); iter != tileCallbacks->second.end(); iter++) {
-        if (std::get<0>(*iter) == tileID.overscaledZ && std::get<1>(*iter) == tileID.wrap) {
-            tileCallbacks->second.erase(iter);
-            invokeTileCancel(tileID.canonical);
-            break;
+    auto entry = tileCallbackMap.find(tileID.canonical);
+    if (entry == tileCallbackMap.end()) return;
+    auto registration = std::find_if(entry->second.registrations.begin(),
+                                     entry->second.registrations.end(),
+                                     [token](const TileRegistration& candidate) {
+                                         return candidate.token == token;
+                                     });
+    if (registration == entry->second.registrations.end()) {
+        // A late message from a tile whose registration is already gone. Removing
+        // anything by tile ID here would strand the tile that took its place.
+        g_staleRemovesIgnored.fetch_add(1, std::memory_order_relaxed);
+        dropEntryIfEmpty(tileID.canonical);
+        return;
+    }
+    entry->second.registrations.erase(registration);
+    releaseProducerIfUnwanted(tileID.canonical, entry->second);
+    dropEntryIfEmpty(tileID.canonical);
+}
+
+void CustomTileLoader::releaseProducerIfUnwanted(const CanonicalTileID& tileID, CanonicalEntry& entry) {
+    const bool stillWanted = std::any_of(entry.registrations.begin(),
+                                         entry.registrations.end(),
+                                         [](const TileRegistration& candidate) {
+                                             return candidate.wantsData;
+                                         });
+    if (stillWanted) {
+        if (entry.producerWanted) {
+            g_cancelsSuppressed.fetch_add(1, std::memory_order_relaxed);
         }
+        return;
     }
-    if (tileCallbacks->second.empty()) {
-        tileCallbackMap.erase(tileCallbacks);
-        eraseCachedTile(dataCache, tileID.canonical);
+    if (!entry.producerWanted) {
+        return;
     }
+    entry.producerWanted = false;
+    invokeTileCancel(tileID);
+}
+
+void CustomTileLoader::dropEntryIfEmpty(const CanonicalTileID& tileID) {
+    auto entry = tileCallbackMap.find(tileID);
+    if (entry == tileCallbackMap.end() || !entry->second.registrations.empty()) {
+        return;
+    }
+    tileCallbackMap.erase(entry);
+    eraseCachedTile(dataCache, tileID);
 }
 
 void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON& data) {
@@ -120,7 +207,7 @@ void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON&
     {
         std::lock_guard<std::mutex> guard(dataMutex);
         const auto iter = tileCallbackMap.find(tileID);
-        hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
+        hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.registrations.empty();
         if (!hasActiveCallbacks) {
             eraseCachedTile(dataCache, tileID);
         }
@@ -131,12 +218,14 @@ void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON&
     }
 
     auto featureData = CustomGeometryTile::processTileData(data, tileID, tileOptions);
-    std::vector<OverscaledIDFunctionTuple> callbacks;
+    std::vector<ActorRef<CustomGeometryTile>> callbacks;
     {
         std::lock_guard<std::mutex> guard(dataMutex);
         const auto iter = tileCallbackMap.find(tileID);
         if (iter != tileCallbackMap.end()) {
-            callbacks = iter->second;
+            for (const auto& registration : iter->second.registrations) {
+                callbacks.push_back(registration.tileRef);
+            }
         }
         if (isCustomTileLoaderDataCacheEnabled() && !callbacks.empty()) {
             const bool inserted = dataCache.find(tileID) == dataCache.end();
@@ -150,8 +239,8 @@ void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON&
             g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    for (const auto& tuple : callbacks) {
-        std::get<2>(tuple).invoke(kSetProcessedTileData, featureData);
+    for (const auto& tileRef : callbacks) {
+        tileRef.invoke(kSetProcessedTileData, featureData);
     }
 }
 
@@ -160,7 +249,7 @@ void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::share
     {
         std::lock_guard<std::mutex> guard(dataMutex);
         const auto iter = tileCallbackMap.find(tileID);
-        hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.empty();
+        hasActiveCallbacks = iter != tileCallbackMap.end() && !iter->second.registrations.empty();
         if (!hasActiveCallbacks) {
             eraseCachedTile(dataCache, tileID);
         }
@@ -172,12 +261,14 @@ void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::share
 
     auto featureData = data ? CustomGeometryTile::processTileData(*data, tileID, tileOptions)
                             : std::make_shared<const TileFeatureCollection>();
-    std::vector<OverscaledIDFunctionTuple> callbacks;
+    std::vector<ActorRef<CustomGeometryTile>> callbacks;
     {
         std::lock_guard<std::mutex> guard(dataMutex);
         const auto iter = tileCallbackMap.find(tileID);
         if (iter != tileCallbackMap.end()) {
-            callbacks = iter->second;
+            for (const auto& registration : iter->second.registrations) {
+                callbacks.push_back(registration.tileRef);
+            }
         }
         if (isCustomTileLoaderDataCacheEnabled() && !callbacks.empty()) {
             const bool inserted = dataCache.find(tileID) == dataCache.end();
@@ -191,8 +282,8 @@ void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::share
             g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    for (const auto& tuple : callbacks) {
-        std::get<2>(tuple).invoke(kSetProcessedTileData, featureData);
+    for (const auto& tileRef : callbacks) {
+        tileRef.invoke(kSetProcessedTileData, featureData);
     }
 }
 
@@ -202,18 +293,24 @@ void CustomTileLoader::invalidateTile(const CanonicalTileID& tileID) {
     if (tileCallbacks == tileCallbackMap.end()) {
         return;
     }
-    for (auto& iter : tileCallbacks->second) {
-        auto actor = std::get<2>(iter);
-        actor.invoke(&CustomGeometryTile::invalidateTileData);
-        invokeTileCancel(tileID);
+    for (auto& registration : tileCallbacks->second.registrations) {
+        registration.tileRef.invoke(&CustomGeometryTile::invalidateTileData);
     }
+    const bool wasWanted = tileCallbacks->second.producerWanted;
     tileCallbackMap.erase(tileCallbacks);
     eraseCachedTile(dataCache, tileID);
+    // One cancel for the canonical tile, the receivers shared a single fetch.
+    if (wasWanted) {
+        invokeTileCancel(tileID);
+    }
 }
 
 void CustomTileLoader::invalidateRegion(const LatLngBounds& bounds, Range<uint8_t>) {
     std::scoped_lock guard(dataMutex);
     std::map<uint8_t, util::TileRange> tileRanges;
+    // Entries left without receivers, erased below so the map does not keep every
+    // canonical tile that was ever invalidated.
+    std::vector<CanonicalTileID> emptied;
     for (auto& idtuple : tileCallbackMap) {
         auto zoom = idtuple.first.z;
         auto tileRange = tileRanges.find(zoom);
@@ -221,23 +318,34 @@ void CustomTileLoader::invalidateRegion(const LatLngBounds& bounds, Range<uint8_
             tileRange = tileRanges.emplace(std::make_pair(zoom, util::TileRange::fromLatLngBounds(bounds, zoom))).first;
         }
         if (tileRange->second.contains(idtuple.first)) {
-            for (auto iter = idtuple.second.begin(); iter != idtuple.second.end(); iter++) {
-                auto actor = std::get<2>(*iter);
-                actor.invoke(&CustomGeometryTile::invalidateTileData);
-                invokeTileCancel(idtuple.first);
+            for (auto& registration : idtuple.second.registrations) {
+                registration.tileRef.invoke(&CustomGeometryTile::invalidateTileData);
+            }
+            if (!idtuple.second.registrations.empty()) {
                 eraseCachedTile(dataCache, idtuple.first);
             }
-            idtuple.second.clear();
+            // One cancel for the canonical tile, the receivers shared a single fetch.
+            if (idtuple.second.producerWanted) {
+                idtuple.second.producerWanted = false;
+                invokeTileCancel(idtuple.first);
+            }
+            idtuple.second.registrations.clear();
+            emptied.push_back(idtuple.first);
         }
+    }
+    for (const auto& tileID : emptied) {
+        dropEntryIfEmpty(tileID);
     }
 }
 
 void CustomTileLoader::clearDataCache() {
     std::lock_guard<std::mutex> guard(dataMutex);
     for (auto& idtuple : tileCallbackMap) {
-        for (auto& iter : idtuple.second) {
-            auto actor = std::get<2>(iter);
-            actor.invoke(&CustomGeometryTile::invalidateTileData);
+        for (auto& registration : idtuple.second.registrations) {
+            registration.tileRef.invoke(&CustomGeometryTile::invalidateTileData);
+        }
+        if (idtuple.second.producerWanted) {
+            idtuple.second.producerWanted = false;
             invokeTileCancel(idtuple.first);
         }
     }

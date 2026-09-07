@@ -6,6 +6,7 @@
 #include <mln/util/geojson.hpp>
 #include <mln/actor/mailbox.hpp>
 
+#include <cstdint>
 #include <memory>
 
 namespace mln {
@@ -50,6 +51,9 @@ private:
     TileNecessity necessity;
     Immutable<style::CustomGeometrySource::TileOptions> options;
     ActorRef<style::CustomTileLoader> loader;
+    // Identifies this tile in the loader, so a late message from a destroyed tile
+    // cannot unregister the tile that reused its tile ID.
+    const std::uint64_t registrationToken;
     std::shared_ptr<Mailbox> mailbox;
     ActorRef<CustomGeometryTile> actorRef;
 };
