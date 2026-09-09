@@ -86,6 +86,13 @@ private:
 
     bool fadingTiles = false;
     bool cacheEnabled = true;
+    tiletrace::ID traceMap = 0, traceSource = 0, traceStyle = 0, traceView = 0, traceSession = 0;
+    uint64_t traceViewSerial = 0;
+    std::vector<Immutable<style::LayerProperties>> traceLayers;
+    std::shared_ptr<const std::vector<std::string>> traceActiveLayers;
+    std::vector<tiletrace::ViewTile> traceViewTiles;
+    void updateTraceView(const std::vector<OverscaledTileID>&);
+
     bool diagnosticSelfTestLogged = false;
     std::size_t coverageGapLogCount = 0;
 };

@@ -51,11 +51,15 @@ public:
 
     CustomTileLoader(const TileFunction& fetchTileFn,
                      const TileFunction& cancelTileFn,
-                     const CustomGeometrySource::TileOptions& tileOptions = {});
+                     const CustomGeometrySource::TileOptions& tileOptions = {},
+                     std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch = {});
 
     void fetchTile(const OverscaledTileID& tileID,
                    const ActorRef<CustomGeometryTile>& tileRef,
                    RegistrationToken token);
+    void fetchTracedTile(const OverscaledTileID&, const ActorRef<CustomGeometryTile>&,
+                         RegistrationToken, tiletrace::Context);
+    void setTracedTileFeatures(const CanonicalTileID&, std::shared_ptr<const FeatureCollection>, tiletrace::Context);
     void cancelTile(const OverscaledTileID& tileID, RegistrationToken token);
 
     void removeTile(const OverscaledTileID& tileID, RegistrationToken token);
@@ -75,6 +79,7 @@ private:
         // Cleared by cancelTile, set again by fetchTile. The producer is only
         // stopped once no registration wants the tile any more.
         bool wantsData;
+        tiletrace::Context trace;
     };
 
     // One canonical tile can feed several receivers, so they share one producer fetch.
@@ -87,17 +92,29 @@ private:
     };
 
     void invokeTileFetch(const CanonicalTileID& tileID);
-    void invokeTileCancel(const CanonicalTileID& tileID);
+    void invokeTileCancel(const CanonicalTileID& tileID,
+                          tiletrace::Retirement reason = tiletrace::Retirement::NoDemand);
     // Both expect dataMutex to be held.
     void releaseProducerIfUnwanted(const CanonicalTileID& tileID, CanonicalEntry& entry);
     void dropEntryIfEmpty(const CanonicalTileID& tileID);
 
+    std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch;
+    tiletrace::Context incomingDemand;
     TileFunction fetchTileFunction;
     TileFunction cancelTileFunction;
     CustomGeometrySource::TileOptions tileOptions;
     std::unordered_map<CanonicalTileID, CanonicalEntry> tileCallbackMap;
     // Keep around processed tile-local geometry to serve back for wrapped and over-zoomed tiles.
-    std::map<CanonicalTileID, TileFeatureCollectionPtr> dataCache;
+public:
+    struct CachedData {
+        TileFeatureCollectionPtr features;
+        tiletrace::Context trace;
+        CachedData() = default;
+        CachedData(TileFeatureCollectionPtr value) : features(std::move(value)) {}
+        CachedData& operator=(TileFeatureCollectionPtr value) { features = std::move(value); trace = {}; return *this; }
+    };
+private:
+    std::map<CanonicalTileID, CachedData> dataCache;
     std::mutex dataMutex;
 };
 

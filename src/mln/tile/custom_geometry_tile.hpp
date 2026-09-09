@@ -39,6 +39,7 @@ public:
 
     void setTileData(const GeoJSON& geoJSON);
     void setTileData(TileFeatureCollectionPtr featureData);
+    void setTracedTileData(TileFeatureCollectionPtr, tiletrace::Context);
     void invalidateTileData();
 
     void setNecessity(TileNecessity) final;
@@ -46,6 +47,7 @@ public:
     void querySourceFeatures(std::vector<Feature>& result, const SourceQueryOptions&) override;
 
 private:
+    tiletrace::Context traceDemand;
     bool stale = true;
     std::string sourceID;
     TileNecessity necessity;

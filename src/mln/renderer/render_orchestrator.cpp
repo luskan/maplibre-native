@@ -224,7 +224,8 @@ std::unique_ptr<RenderTree> RenderOrchestrator::createRenderTree(
                                   .tileLodZoomShift = updateParameters->tileLodZoomShift,
                                   .tileLodMode = updateParameters->tileLodMode,
                                   .dynamicTextureAtlas = dynamicTextureAtlas,
-                                  .geometryTileZoomState = geometryTileZoomState};
+                                  .geometryTileZoomState = geometryTileZoomState,
+                                  .traceEvaluationZoom = zoomHistory.lastZoom};
 
     glyphManager->setURL(updateParameters->glyphURL);
     glyphManager->setFontFaces(updateParameters->fontFaces);

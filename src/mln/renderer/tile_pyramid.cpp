@@ -1,4 +1,6 @@
+#include <mln/util/tile_trace.hpp>
 #include <mln/renderer/tile_pyramid.hpp>
+#include <mln/style/sources/custom_geometry_source_impl.hpp>
 #include <mln/renderer/paint_parameters.hpp>
 #include <mln/renderer/render_source.hpp>
 #include <mln/renderer/tile_parameters.hpp>
@@ -187,6 +189,26 @@ const Tile* TilePyramid::getRenderedTile(const UnwrappedTileID& tileID) const {
     return it != renderedTiles.end() ? &it->second.get() : nullptr;
 }
 
+void TilePyramid::updateTraceView(const std::vector<OverscaledTileID>& idealTiles) {
+    if (!traceMap || !traceSource) return;
+    if (idealTiles.size() > tiletrace::ViewTileLimit) {
+        traceView = tiletrace::updateView(traceMap, traceSource, traceStyle, nullptr, idealTiles.size());
+        return;
+    }
+    std::vector<tiletrace::ViewTile> keys;
+    keys.reserve(idealTiles.size());
+    for (const auto& id : idealTiles)
+        keys.push_back({id.canonical.x, id.canonical.y, id.wrap, id.canonical.z, id.overscaledZ});
+    std::sort(keys.begin(), keys.end());
+    const auto serial = tiletrace::viewSerial();
+    const auto session = tiletrace::session();
+    if (traceView && traceSession == session && traceViewSerial == serial && keys == traceViewTiles) return;
+    traceView = tiletrace::updateView(traceMap, traceSource, traceStyle, keys.data(), keys.size());
+    traceViewSerial = serial;
+    traceSession = session;
+    traceViewTiles = std::move(keys);
+}
+
 void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& layers,
                          const bool needsRendering,
                          const bool needsRelayout,
@@ -196,6 +218,32 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
                          const Range<uint8_t> zoomRange,
                          std::optional<LatLngBounds> bounds,
                          std::function<std::unique_ptr<Tile>(const OverscaledTileID&, TileObserver*)> createTile) {
+    if (sourceImpl.type == style::SourceType::CustomVector) {
+        const auto options = static_cast<const style::CustomGeometrySource::Impl&>(sourceImpl).getTileOptions();
+        if (traceMap != options->traceMap || traceSource != options->traceSource) traceView = 0;
+        traceMap = options->traceMap;
+        traceSource = options->traceSource;
+        if (traceMap && traceSource) {
+            std::vector<std::string> active;
+            const auto zoom = parameters.traceEvaluationZoom;
+            for (const auto& layer : layers)
+                if (layer->renderPasses && (!zoom || (layer->baseImpl->minZoom <= *zoom && layer->baseImpl->maxZoom >= *zoom)))
+                    active.push_back(layer->baseImpl->id);
+            bool changed = needsRelayout || layers.size() != traceLayers.size() ||
+                           !traceActiveLayers || active != *traceActiveLayers;
+            if (!changed) {
+                for (size_t i = 0; i < layers.size(); ++i)
+                    changed |= layers[i]->baseImpl != traceLayers[i]->baseImpl;
+            }
+            if (changed || !traceStyle) {
+                traceStyle = tiletrace::nextID();
+                traceView = 0;
+                traceLayers = layers;
+                traceActiveLayers = std::make_shared<const std::vector<std::string>>(std::move(active));
+            }
+        }
+    }
+
     // If we need a relayout, abandon any cached tiles; they're now stale.
     if (needsRelayout) {
         cache.clear();
@@ -204,6 +252,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
     // If we're not going to render anything, move our existing tiles into
     // the cache (if they're not stale) or abandon them, and return.
     if (!needsRendering) {
+        updateTraceView({});
         for (auto& entry : tiles) {
             if (!needsRelayout) {
                 // These tiles are invisible, we set optional necessity
@@ -284,6 +333,8 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
         }
     }
 
+    updateTraceView(idealTiles);
+
     // Stores a list of all the tiles that we're definitely going to retain.
     // There are two kinds of tiles we need: the ideal tiles determined by the
     // tile cover. They may not yet be in use because they're still loading. In
@@ -291,9 +342,16 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
     // using, e.g. as a replacement for tile that aren't loaded yet.
     std::set<OverscaledTileID> retain;
 
+    bool tracePrefetch = false;
     auto retainTileFn = [&](Tile& tile, TileNecessity necessity) -> void {
+        tile.tileTraceView = traceView;
+        tile.tileTraceLayers = traceActiveLayers;
         if (retain.emplace(tile.id).second) {
             tile.setUpdateParameters({.minimumUpdateInterval = minimumUpdateInterval, .isVolatile = isVolatile});
+            if (tiletrace::enabled()) {
+                const bool ideal = std::find(idealTiles.begin(), idealTiles.end(), tile.id) != idealTiles.end();
+                tile.tileTraceRole = tracePrefetch ? 1 : ideal ? 2 : 3;
+            }
             tile.setNecessity(necessity);
         }
 
@@ -341,6 +399,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
     renderedTiles.clear();
 
     if (!panTiles.empty()) {
+        tracePrefetch = true;
         algorithm::updateRenderables(
             getTileFn,
             createTileFn,
@@ -352,6 +411,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
             maxParentTileOverscaleFactor);
     }
 
+    tracePrefetch = false;
     algorithm::updateRenderables(getTileFn,
                                  createTileFn,
                                  retainTileFn,

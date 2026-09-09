@@ -246,6 +246,7 @@ public:
 
 class SymbolBucket final : public Bucket {
 public:
+    bool isSymbolBucket() const override { return true; }
     SymbolBucket(Immutable<style::SymbolLayoutProperties::PossiblyEvaluated>,
                  const std::map<std::string, Immutable<style::LayerProperties>>&,
                  const style::PropertyValue<float>& textSize,

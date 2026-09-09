@@ -266,6 +266,11 @@ void GeometryTile::setData(std::unique_ptr<const GeometryTileData> data_) {
     // signaling a complete state despite pending parse operations.
     pending = true;
 
+    if (tileTraceInput.publication && (!data_ || tileTraceInput.publication != data_->trace.publication)) {
+        auto replaced = tileTraceInput;
+        tiletrace::finish(replaced, tiletrace::Outcome::Superseded);
+    }
+    tileTraceInput = data_ ? data_->trace : tiletrace::Context{};
     ++correlationID;
     worker.self().invoke(
         &GeometryTileWorker::setData, std::move(data_), imageManager->getAvailableImages(), correlationID);
@@ -358,9 +363,29 @@ void GeometryTile::onLayout(std::shared_ptr<LayoutResult>&& result, const uint64
     MLN_TRACE_FUNC();
 
     if (resultCorrelationID != correlationID) {
+        if (result) tiletrace::finish(result->trace, tiletrace::Outcome::Superseded);
         return;
     }
 
+    if (result) {
+        tiletrace::mark(result->trace, tiletrace::Layout);
+        if (tileTraceLayers) {
+            const bool noDraw = std::none_of(tileTraceLayers->begin(), tileTraceLayers->end(), [&](const auto& layer) {
+                const auto found = result->layerRenderData.find(layer);
+                return found != result->layerRenderData.end() && found->second.bucket;
+            });
+            const tiletrace::ViewTile key{id.canonical.x, id.canonical.y, id.wrap, id.canonical.z, id.overscaledZ};
+            tiletrace::batchLayoutAccepted(result->trace, noDraw, tileTraceView, &key);
+        }
+        tiletrace::bindDemand(result->trace);
+        if (result->trace.empty && result->trace.outcome != tiletrace::Outcome::Error)
+            tiletrace::finish(result->trace, tiletrace::Outcome::Empty);
+        for (auto& entry : result->layerRenderData) {
+            // Retained buckets keep the provenance of the data that built them.
+            if (entry.second.bucket && !entry.second.bucket->trace.id)
+                entry.second.bucket->trace = result->trace;
+        }
+    }
     loaded = true;
     renderable = true;
     pending = false;
@@ -403,6 +428,14 @@ void GeometryTile::onError(std::exception_ptr err, const uint64_t resultCorrelat
         return;
     }
 
+    auto failed = tileTraceInput;
+    if (failed.id) {
+        failed.id = tiletrace::nextID();
+        failed.kind = tiletrace::Kind::Layout;
+        failed.generation = failed.id;
+    }
+    tiletrace::finish(failed, tiletrace::Outcome::Error);
+    tiletrace::bindDemand(failed);
     loaded = true;
     pending = false;
     observer->onTileAction(id, sourceID, TileOperation::Error);

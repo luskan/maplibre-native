@@ -69,7 +69,7 @@ public:
     GeoJSONTileData(std::shared_ptr<const mapbox::feature::feature_collection<int16_t>> features_)
         : features(std::move(features_)) {}
 
-    std::unique_ptr<GeometryTileData> clone() const override { return std::make_unique<GeoJSONTileData>(features); }
+    std::unique_ptr<GeometryTileData> clone() const override { auto copy = std::make_unique<GeoJSONTileData>(features); copy->trace = trace; return copy; }
 
     std::unique_ptr<GeometryTileLayer> getLayer(const std::string&) const override {
         return std::make_unique<GeoJSONTileLayer>(features);

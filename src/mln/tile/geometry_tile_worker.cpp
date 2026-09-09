@@ -606,13 +606,18 @@ void GeometryTileWorker::finalizeLayout() {
                                    << " Canonical: " << static_cast<int>(id.canonical.z) << "/" << id.canonical.x << "/"
                                    << id.canonical.y << " Time");
 
-    parent.invoke(&GeometryTile::onLayout,
-                  std::make_shared<GeometryTile::LayoutResult>(std::move(renderData),
+    auto result = std::make_shared<GeometryTile::LayoutResult>(std::move(renderData),
                                                                std::move(featureIndex),
                                                                std::move(glyphAtlas),
                                                                std::move(imageAtlas),
-                                                               dynamicTextureAtlas),
-                  correlationID);
+                                                               dynamicTextureAtlas);
+    if (data && *data && (*data)->trace.id) {
+        result->trace = (*data)->trace;
+        result->trace.id = tiletrace::nextID();
+        result->trace.kind = tiletrace::Kind::Layout;
+        result->trace.generation = result->trace.id;
+    }
+    parent.invoke(&GeometryTile::onLayout, std::move(result), correlationID);
 }
 
 } // namespace mln

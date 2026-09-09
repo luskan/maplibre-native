@@ -7,6 +7,7 @@
 #include <mln/util/constants.hpp>
 
 #include <memory>
+#include <mln/util/tile_trace.hpp>
 
 namespace mln {
 
@@ -31,6 +32,7 @@ public:
         uint16_t buffer = 128;
         bool clip = false;
         bool wrap = false;
+        tiletrace::ID traceMap = 0, traceSource = 0;
     };
 
     struct Options {
@@ -38,6 +40,7 @@ public:
         TileFunction cancelTileFunction;
         Range<uint8_t> zoomRange = {0, 18};
         TileOptions tileOptions;
+        std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch;
     };
 
 public:
@@ -46,6 +49,8 @@ public:
     void loadDescription(FileSource&) final;
     void setTileData(const CanonicalTileID&, const GeoJSON&);
     void setTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&);
+    void setTracedTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&,
+                              tiletrace::Context);
     void invalidateTile(const CanonicalTileID&);
     void invalidateRegion(const LatLngBounds&);
     void clearTileCache();

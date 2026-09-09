@@ -69,6 +69,7 @@ public:
 
     class LayoutResult {
     public:
+        tiletrace::Context trace;
         mln::unordered_map<std::string, LayerRenderData> layerRenderData;
         std::shared_ptr<FeatureIndex> featureIndex;
         gfx::GlyphAtlas glyphAtlas;
@@ -106,6 +107,9 @@ public:
 
 protected:
     const GeometryTileData* getData() const;
+    const tiletrace::Context* retainedTraceForDiagnostics() const {
+        return layoutResult ? &layoutResult->trace : nullptr;
+    }
     LayerRenderData* getLayerRenderData(const style::Layer::Impl&);
 
     // Used to signal the worker that it should abandon parsing this tile as soon as possible.
@@ -125,6 +129,7 @@ private:
 
     uint64_t correlationID = 0;
 
+    tiletrace::Context tileTraceInput;
     std::shared_ptr<LayoutResult> layoutResult;
     std::shared_ptr<TileAtlasTextures> atlasTextures;
 

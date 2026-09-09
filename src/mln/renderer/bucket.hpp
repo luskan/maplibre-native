@@ -27,6 +27,7 @@ class RenderTile;
 
 class Bucket {
 public:
+    tiletrace::Context trace;
     Bucket(const Bucket&) = delete;
     Bucket& operator=(const Bucket&) = delete;
 
@@ -49,6 +50,7 @@ public:
     // being rendered for the first time.
     virtual void upload(gfx::UploadPass&) = 0;
 
+    virtual bool isSymbolBucket() const { return false; }
     virtual bool hasData() const = 0;
 
     virtual float getQueryRadius(const RenderLayer&) const { return 0; };

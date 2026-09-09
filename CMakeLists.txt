@@ -711,6 +711,7 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mln/style/conversion/tileset.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/style/conversion/transition_options.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/style/custom_tile_conversion.cpp
+    ${PROJECT_SOURCE_DIR}/src/mln/util/tile_trace.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/style/custom_tile_loader.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/style/custom_tile_loader.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/style/custom_vector_tile_loader.cpp

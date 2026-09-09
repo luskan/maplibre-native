@@ -47,6 +47,7 @@ CustomGeometryTile::CustomGeometryTile(const OverscaledTileID& overscaledTileID,
       actorRef(*this, mailbox) {}
 
 CustomGeometryTile::~CustomGeometryTile() {
+    tiletrace::finish(traceDemand, tiletrace::Outcome::Teardown);
     mailbox->close();  // Prevent messages from being delivered to destroyed tile (UAF fix)
     loader.invoke(&style::CustomTileLoader::removeTile, id, registrationToken);
 }
@@ -98,6 +99,15 @@ void CustomGeometryTile::setTileData(TileFeatureCollectionPtr featureData) {
         featureData ? std::move(featureData) : std::make_shared<const TileFeatureCollection>()));
 }
 
+void CustomGeometryTile::setTracedTileData(TileFeatureCollectionPtr featureData, tiletrace::Context trace) {
+    tiletrace::mark(trace, tiletrace::Delivered);
+    tiletrace::bindDemand(trace);
+    auto data = std::make_unique<GeoJSONTileData>(
+        featureData ? std::move(featureData) : std::make_shared<const TileFeatureCollection>());
+    data->trace = trace;
+    setData(std::move(data));
+}
+
 void CustomGeometryTile::invalidateTileData() {
     stale = true;
     observer->onTileChanged(*this);
@@ -110,12 +120,27 @@ void CustomGeometryTile::setNecessity(TileNecessity newNecessity) {
     if (newNecessity != necessity || stale) {
         necessity = newNecessity;
         if (necessity == TileNecessity::Required) {
+            tiletrace::finish(traceDemand, tiletrace::Outcome::Superseded);
+            traceDemand = tiletrace::create(options->traceMap, options->traceSource, registrationToken,
+                id.canonical.z, id.canonical.x, id.canonical.y, id.overscaledZ, id.wrap, tileTraceRole, tileTraceView);
             if (stale || !isRenderable()) {
-                loader.invoke(&style::CustomTileLoader::fetchTile, id, actorRef, registrationToken);
+                loader.invoke(&style::CustomTileLoader::fetchTracedTile, id, actorRef, registrationToken, traceDemand);
+            }
+            const auto* retained = retainedTraceForDiagnostics();
+            if (!stale && isRenderable() && retained) {
+                auto reuse = *retained;
+                reuse.demand = traceDemand.id;
+                reuse.view = traceDemand.view;
+                reuse.session = traceDemand.session;
+                reuse.origin = tiletrace::Origin::Renderer;
+                reuse.time = {};
+                reuse.time[tiletrace::Request] = traceDemand.time[tiletrace::Request];
+                tiletrace::bindDemand(reuse);
             }
             stale = false;
-        } else if (!isRenderable()) {
-            loader.invoke(&style::CustomTileLoader::cancelTile, id, registrationToken);
+        } else {
+            tiletrace::finish(traceDemand, tiletrace::Outcome::Cancelled);
+            if (!isRenderable()) loader.invoke(&style::CustomTileLoader::cancelTile, id, registrationToken);
         }
     }
 }

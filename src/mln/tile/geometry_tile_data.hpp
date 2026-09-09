@@ -3,6 +3,7 @@
 #include <mln/util/geometry.hpp>
 #include <mln/util/feature.hpp>
 
+#include <mln/util/tile_trace.hpp>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -84,6 +85,7 @@ public:
 
 class GeometryTileData {
 public:
+    tiletrace::Context trace;
     virtual ~GeometryTileData() = default;
     virtual std::unique_ptr<GeometryTileData> clone() const = 0;
 

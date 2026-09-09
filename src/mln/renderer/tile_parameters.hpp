@@ -76,6 +76,7 @@ public:
     gfx::DynamicTextureAtlasPtr dynamicTextureAtlas;
     bool isUpdateSynchronous = false;
     GeometryTileZoomState geometryTileZoomState;
+    std::optional<float> traceEvaluationZoom;
 };
 
 } // namespace mln

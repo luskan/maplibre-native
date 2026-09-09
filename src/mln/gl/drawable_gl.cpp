@@ -1,4 +1,6 @@
 #include <mln/gl/drawable_gl.hpp>
+#include <mln/renderer/bucket.hpp>
+#include <mln/renderer/buckets/symbol_bucket.hpp>
 #include <mln/gl/drawable_gl_impl.hpp>
 #include <mln/gl/texture2d.hpp>
 #include <mln/gl/upload_pass.hpp>
@@ -71,6 +73,11 @@ void DrawableGL::draw(PaintParameters& parameters) const {
         if (mlSeg.indexLength > 0 && glSeg.getVertexArray().isValid()) {
             context.bindVertexArray = glSeg.getVertexArray().getID();
             context.draw(glSeg.getMode(), mlSeg.indexOffset, mlSeg.indexLength);
+            if (const auto& bucket = getBucket(); bucket && getEnableColor() && getTileID()) {
+                const auto& id = *getTileID();
+                const tiletrace::ViewTile key{id.canonical.x, id.canonical.y, id.wrap, id.canonical.z, id.overscaledZ};
+                tiletrace::draw(bucket->trace, bucket->isSymbolBucket(), &key);
+            }
         }
     }
     // Unbind the VAO so that future buffer commands outside Drawable do not change the current VAO state

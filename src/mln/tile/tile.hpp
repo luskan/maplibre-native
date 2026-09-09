@@ -50,6 +50,9 @@ inline bool operator!=(const TileUpdateParameters& a, const TileUpdateParameters
 }
 class Tile : public TileLoaderObserver {
 public:
+    uint8_t tileTraceRole = 0;
+    tiletrace::ID tileTraceView = 0;
+    std::shared_ptr<const std::vector<std::string>> tileTraceLayers;
     enum class Kind : uint8_t {
         Geometry,
         Raster,
