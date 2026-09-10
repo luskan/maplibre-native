@@ -69,7 +69,7 @@ struct BatchMember
 struct View
 {
   ID session = 0, map = 0, source = 0, id = 0, style = 0, leftOrder = 0;
-  uint64_t gap = 0;
+  uint64_t gap = 0, captureGeneration = 0;
   size_t count = 0;
   std::array<ViewTile, ViewTileLimit> tiles{};
   std::array<ID, ViewTileLimit> requirements{}, invalidations{};
@@ -171,6 +171,8 @@ struct Collector
   std::atomic<ID> epoch{static_cast<ID>(std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count())};
   std::atomic<bool> capture{true};
+  std::atomic<uint64_t> captureGeneration{1};
+  std::atomic<ID> viewLossStart{0};
   std::atomic<uint64_t> lost{0}, gaps{0}, viewChanges{1};
   std::atomic<uint64_t> memoryStatsTime{0}, diskStatsTime{0};
   uint64_t evicted = 0, started = 0;
@@ -356,7 +358,11 @@ void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundar
   }
   if (kind == LostEvent::View)
   {
-    if (auto* slot = sourceSlot(bank, source, true)) slot->view.store(nextID());
+    if (auto* slot = sourceSlot(bank, source, true))
+    {
+      auto previous = slot->view.load();
+      while (previous < evidence.order && !slot->view.compare_exchange_weak(previous, evidence.order)) {}
+    }
     else
     {
       firstTime(bank.overflow, timestamp);
@@ -379,7 +385,9 @@ uint64_t viewGap(ID source)
   LossLease lease(collector().epoch.load());
   if (!lease.bank) return UINT64_MAX;
   auto* slot = sourceSlot(*lease.bank, source, false);
-  return slot ? slot->view.load() : 0;
+  const auto order = slot ? slot->view.load() : 0;
+  // A delayed loss from before capture resumed cannot invalidate the new view.
+  return order < collector().viewLossStart.load() ? 0 : order;
 }
 struct MemberLoss
 {
@@ -555,8 +563,10 @@ size_t viewIndex(const View& view, const ViewTile& tile)
 }
 const View* currentView(const Collector& c, ID map, ID source, ID session)
 {
+  if (!c.capture.load()) return nullptr;
   for (const auto& view : c.views)
-    if (view.id && view.map == map && view.source == source && view.session == session) return &view;
+    if (view.id && view.map == map && view.source == source && view.session == session &&
+        view.captureGeneration == c.captureGeneration.load()) return &view;
   return nullptr;
 }
 const View* originalView(const Collector& c, const Context& context)
@@ -817,6 +827,7 @@ void configure(bool capture, bool reset)
   auto& c = collector();
   std::lock_guard<std::mutex> lock(c.mutex);
   std::lock_guard<std::mutex> batchLock(c.batchMutex);
+  const bool changed = c.capture.load() != capture;
   if (c.capture.load() && !capture && !reset) ++c.gaps;
   if (!reset)
   {
@@ -838,7 +849,6 @@ void configure(bool capture, bool reset)
     c.nextView = 0;
     for (auto& view : c.viewHistory) view.id = 0;
     c.nextViewHistory = 0;
-    ++c.viewChanges;
     resetLosses(nextEpoch);
     for (auto& demand : c.demandOutcomes) demand = {};
     c.retiredDemandThrough = 0;
@@ -849,6 +859,12 @@ void configure(bool capture, bool reset)
     c.retiredThrough = 0;
     c.started = now();
     c.epoch.store(nextEpoch);
+  }
+  if (changed || reset)
+  {
+    c.viewLossStart = c.serial.load();
+    ++c.captureGeneration;
+    ++c.viewChanges;
   }
   c.capture = capture;
 }
@@ -992,7 +1008,10 @@ void pump(ID map, bool begin) noexcept { activity(begin ? 1 : 2, map); }
 void frontend(ID map, bool begin) noexcept { activity(begin ? 3 : 4, map); }
 FrameScope::FrameScope(int mode) noexcept
 {
-  frame = {};
+  // Only entries below count are read, and draw initializes each slot before admitting it.
+  frame.id = frame.session = frame.surface = 0;
+  frame.ended = frame.swapStarted = 0;
+  frame.mode = 0; frame.swapped = false; frame.count = 0;
   if (!enabled()) return;
   frame.id = nextID(); frame.session = session(); frame.mode = mode;
   activity(5, 0, mode);
@@ -1004,6 +1023,7 @@ FrameScope::~FrameScope()
 }
 void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile) noexcept
 {
+  const auto generation = captureGeneration();
   const auto evidence = eventBoundary();
   auto original = originalTrace;
   if (actualTile)
@@ -1048,16 +1068,20 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
   record = {}; record.context = context; record.symbol = symbol; record.frame = frame.id;
   record.context.time[Draw] = evidence.time;
   record.drawOrder = evidence.order;
+  TILE_TRACE_TEST_HOOK("draw_view");
   {
     auto& c = collector();
     BatchWrite lock(c);
     if (!lock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence);
-    else if (const auto* view = currentView(c, context.map, context.source, context.session))
+    else if (c.captureGeneration.load() == generation)
     {
-      const auto index = viewIndex(*view, viewTile(context));
-      if (index < view->count && view->gap == viewGap(context.source))
-        record.drawRequirement = view->requirements[index];
-      record.drawViewSerial = c.viewChanges.load();
+      if (const auto* view = currentView(c, context.map, context.source, context.session))
+      {
+        const auto index = viewIndex(*view, viewTile(context));
+        if (index < view->count && view->gap == viewGap(context.source))
+          record.drawRequirement = view->requirements[index];
+        record.drawViewSerial = c.viewChanges.load();
+      }
     }
   }
   store(record.context);
@@ -1210,26 +1234,36 @@ bool ViewTile::operator<(const ViewTile& other) const noexcept
   return std::tie(z, x, y, overscaledZ, wrap) < std::tie(other.z, other.x, other.y, other.overscaledZ, other.wrap);
 }
 uint64_t viewSerial() noexcept { return collector().viewChanges.load(); }
-ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) noexcept
+uint64_t captureGeneration() noexcept { return collector().captureGeneration.load(); }
+ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count,
+              uint64_t expectedCaptureGeneration) noexcept
 {
-  const auto evidence = eventBoundary();
   if (!map || !source) return 0;
   auto& c = collector();
+  const auto generation = expectedCaptureGeneration ? expectedCaptureGeneration : c.captureGeneration.load();
+  const auto epoch = c.epoch.load();
+  const auto active = [&] {
+    return c.capture.load() && c.captureGeneration.load() == generation && c.epoch.load() == epoch;
+  };
+  if (!active()) return 0;
+  const auto evidence = eventBoundary();
   const auto missing = [&]() -> ID
   {
-    batchLoss(0, source, LostEvent::View, c.epoch.load(), evidence); ++c.viewChanges;
+    if (active()) { batchLoss(0, source, LostEvent::View, epoch, evidence); ++c.viewChanges; }
     return 0;
   };
 #ifdef TILE_TRACE_TESTING
   if (testDropViews.load()) return missing();
 #endif
-  if (!c.capture.load() || count > ViewTileLimit || (count && !tiles)) return missing();
+  if (count > ViewTileLimit || (count && !tiles)) return missing();
   std::array<ViewTile, ViewTileLimit> sorted{};
   if (count) std::copy_n(tiles, count, sorted.begin());
   std::sort(sorted.begin(), sorted.begin() + count);
   count = std::unique(sorted.begin(), sorted.begin() + count) - sorted.begin();
+  TILE_TRACE_TEST_HOOK("view_prepared");
   BatchWrite lock(c);
   if (!lock) return missing();
+  if (!active()) return 0;
   View* view = nullptr;
   for (auto& candidate : c.views)
     if (candidate.map == map && candidate.source == source && candidate.session == c.epoch.load()) view = &candidate;
@@ -1245,10 +1279,11 @@ ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) 
     *view = {};
   }
   const auto gap = viewGap(source);
-  if (view->id && view->style == style && view->gap == gap && view->count == count &&
+  if (view->id && view->captureGeneration == generation && view->style == style &&
+      view->gap == gap && view->count == count &&
       std::equal(sorted.begin(), sorted.begin() + count, view->tiles.begin())) return view->id;
   auto previous = *view;
-  const bool continuous = previous.id && previous.gap == gap;
+  const bool continuous = previous.id && previous.captureGeneration == generation && previous.gap == gap;
   const auto timestamp = evidence.time;
   previous.leftOrder = evidence.order;
   if (continuous)
@@ -1258,6 +1293,7 @@ ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) 
   rememberView(c, previous);
   view->session = c.epoch.load(); view->map = map; view->source = source;
   view->id = nextID(); view->style = style; view->gap = gap; view->count = count;
+  view->captureGeneration = generation;
   view->tiles = sorted;
   view->leftTimes.fill(0);
   view->leftOrder = 0;
@@ -1275,14 +1311,25 @@ ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) 
 }
 void invalidateView(ID map, ID source, const ViewTileRange* range) noexcept
 {
-  const auto evidence = eventBoundary();
   if (!map || !source) return;
   auto& c = collector();
+  const auto generation = c.captureGeneration.load();
+  const auto epoch = c.epoch.load();
+  const auto active = [&] {
+    return c.capture.load() && c.captureGeneration.load() == generation && c.epoch.load() == epoch;
+  };
+  if (!active()) return;
+  const auto evidence = eventBoundary();
   BatchWrite lock(c);
-  if (!lock) { batchLoss(0, source, LostEvent::View, c.epoch.load(), evidence); ++c.viewChanges; return; }
+  if (!lock)
+  {
+    if (active()) { batchLoss(0, source, LostEvent::View, epoch, evidence); ++c.viewChanges; }
+    return;
+  }
+  if (!active()) return;
   for (auto& view : c.views)
   {
-    if (!view.id || view.map != map || view.source != source) continue;
+    if (!view.id || view.map != map || view.source != source || view.captureGeneration != generation) continue;
     const auto previous = view;
     ID revision = 0;
     std::bitset<ViewTileLimit> changedKeys;
@@ -1345,7 +1392,8 @@ void trackBatchMember(const BatchInfo& info, const Context& context) noexcept
   member.mlFailed = member.publicationFailed;
   if (const auto* origin = originalView(c, context))
   {
-    member.viewKnown = origin->gap == viewGap(context.source) && !member.publicationFailed;
+    member.viewKnown = origin->gap == viewGap(context.source) &&
+      origin->captureGeneration == c.captureGeneration.load() && !member.publicationFailed;
     member.viewGap = origin->gap;
     for (size_t i = 0; i < origin->count; ++i)
     {

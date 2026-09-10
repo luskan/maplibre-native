@@ -191,8 +191,13 @@ const Tile* TilePyramid::getRenderedTile(const UnwrappedTileID& tileID) const {
 
 void TilePyramid::updateTraceView(const std::vector<OverscaledTileID>& idealTiles) {
     if (!traceMap || !traceSource) return;
+    const auto generation = tiletrace::captureGeneration();
+    if (!tiletrace::enabled()) {
+        traceView = 0;
+        return;
+    }
     if (idealTiles.size() > tiletrace::ViewTileLimit) {
-        traceView = tiletrace::updateView(traceMap, traceSource, traceStyle, nullptr, idealTiles.size());
+        traceView = tiletrace::updateView(traceMap, traceSource, traceStyle, nullptr, idealTiles.size(), generation);
         return;
     }
     std::vector<tiletrace::ViewTile> keys;
@@ -202,8 +207,10 @@ void TilePyramid::updateTraceView(const std::vector<OverscaledTileID>& idealTile
     std::sort(keys.begin(), keys.end());
     const auto serial = tiletrace::viewSerial();
     const auto session = tiletrace::session();
-    if (traceView && traceSession == session && traceViewSerial == serial && keys == traceViewTiles) return;
-    traceView = tiletrace::updateView(traceMap, traceSource, traceStyle, keys.data(), keys.size());
+    if (traceView && traceSession == session && traceViewSerial == serial &&
+        traceCaptureGeneration == generation && keys == traceViewTiles) return;
+    traceView = tiletrace::updateView(traceMap, traceSource, traceStyle, keys.data(), keys.size(), generation);
+    traceCaptureGeneration = generation;
     traceViewSerial = serial;
     traceSession = session;
     traceViewTiles = std::move(keys);

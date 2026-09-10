@@ -16,6 +16,9 @@ class RecordLookupTest(unittest.TestCase):
         baseline_path = os.environ.get("TILE_TRACE_BASELINE_SOURCE")
         source = Path(baseline_path).read_text() if baseline_path else ""
         source = source.replace(
+            "ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) noexcept",
+            "ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count, uint64_t) noexcept")
+        source = source.replace(
             "      std::copy_n(batch.members.begin(), batch.count, destination.batch.members.begin());",
             '      std::copy_n(batch.members.begin(), batch.count, destination.batch.members.begin());\n'
             '      TILE_TRACE_TEST_HOOK("batch_published");\n'

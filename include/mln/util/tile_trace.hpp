@@ -85,7 +85,10 @@ struct ViewTile
 };
 constexpr size_t ViewTileLimit = 256;
 uint64_t viewSerial() noexcept;
-ID updateView(ID map, ID source, ID style, const ViewTile*, size_t count) noexcept;
+uint64_t captureGeneration() noexcept;
+// Pass the generation from before preparing tiles to reject updates that crossed a capture transition.
+ID updateView(ID map, ID source, ID style, const ViewTile*, size_t count,
+              uint64_t expectedCaptureGeneration = 0) noexcept;
 struct ViewTileRange
 {
   uint32_t minX = 0, minY = 0, maxX = 0, maxY = 0;

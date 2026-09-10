@@ -68,6 +68,16 @@ int main(int argc, char** argv)
   const size_t count = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 80;
   if (!count || count > Capacity) return 2;
   configure(true, true); surfaceCreated(99);
+  if (mode == "frame-enabled" || mode == "frame-disabled")
+  {
+    configure(mode == "frame-enabled");
+    measure(mode.c_str(), count, 2000, [&] {
+      FrameScope scope(2);
+      // Keep the whole buffer observable so the benchmark cannot discard its initialization.
+      asm volatile("" : : "r"(&frame) : "memory");
+    });
+    return 0;
+  }
   if (mode == "bind")
   {
     const ViewTile key{4, 5, 0, 10, 10};
