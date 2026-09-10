@@ -10,6 +10,29 @@
 using namespace mln::tiletrace;
 using Clock = std::chrono::steady_clock;
 volatile size_t observed = 0;
+struct MemoryUsage
+{
+  long rss = -1, pss = -1, virtualSize = -1;
+};
+MemoryUsage memoryUsage()
+{
+  MemoryUsage usage;
+  char line[256];
+  auto* file = std::fopen("/proc/self/smaps_rollup", "r");
+  if (!file) std::abort();
+  while (std::fgets(line, sizeof(line), file))
+  {
+    std::sscanf(line, "Rss: %ld kB", &usage.rss);
+    std::sscanf(line, "Pss: %ld kB", &usage.pss);
+  }
+  std::fclose(file);
+  file = std::fopen("/proc/self/status", "r");
+  if (!file) std::abort();
+  while (std::fgets(line, sizeof(line), file)) std::sscanf(line, "VmSize: %ld kB", &usage.virtualSize);
+  std::fclose(file);
+  if (usage.rss < 0 || usage.pss < 0 || usage.virtualSize < 0) std::abort();
+  return usage;
+}
 double cpuTimeUs()
 {
   timespec time{};
@@ -18,7 +41,7 @@ double cpuTimeUs()
 }
 template<class Callback> void measure(const char* mode, size_t count, size_t iterations, Callback callback)
 {
-  for (size_t i = 0; i < 5; ++i) callback();
+  for (size_t i = 0; i < 1000; ++i) callback();
   std::array<double, 20> samples, cpuSamples;
   for (size_t sample = 0; sample < samples.size(); ++sample)
   {
@@ -67,6 +90,29 @@ int main(int argc, char** argv)
   const std::string mode = argc > 1 ? argv[1] : "redraw";
   const size_t count = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 80;
   if (!count || count > Capacity) return 2;
+  if (mode == "memory")
+  {
+    memoryUsage();
+    const auto before = memoryUsage();
+    const auto capture = enabled();
+    asm volatile("" : : "r"(&collector()) : "memory");
+    const auto started = memoryUsage();
+    configure(true, false);
+    const auto configured = memoryUsage();
+    { FrameScope scope(2); }
+    const auto framed = memoryUsage();
+    std::printf("{\"mode\":\"memory\",\"collector_bytes\":%zu,\"published_bytes\":%zu,\"loss_bytes\":%zu,"
+                "\"frame_bytes\":%zu,\"capture\":%d,\"before_rss_kib\":%ld,\"enabled_rss_kib\":%ld,"
+                "\"configured_rss_kib\":%ld,\"framed_rss_kib\":%ld,\"before_pss_kib\":%ld,"
+                "\"enabled_pss_kib\":%ld,\"configured_pss_kib\":%ld,\"framed_pss_kib\":%ld,"
+                "\"before_virtual_kib\":%ld,\"enabled_virtual_kib\":%ld}\n",
+                sizeof(Collector), sizeof(Collector::published), sizeof(lossBanks), sizeof(Frame), capture,
+                before.rss, started.rss, configured.rss, framed.rss, before.pss, started.pss, configured.pss,
+                framed.pss, before.virtualSize, started.virtualSize);
+    return 0;
+  }
+  // Match session hashes so both binaries encounter the same detailed-record lookup collisions.
+  collector().epoch = 1;
   configure(true, true); surfaceCreated(99);
   if (mode == "frame-enabled" || mode == "frame-disabled")
   {

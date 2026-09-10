@@ -165,8 +165,8 @@ struct Collector
     std::atomic<int> readers{0};
     Batch batch;
   };
-  std::array<std::array<Published, 3>, BatchCapacity> published{};
   std::array<std::atomic<size_t>, BatchCapacity> publishedIndex{};
+  std::array<size_t, 2> publishedSpare{{BatchCapacity, BatchCapacity + 1}};
   std::atomic<ID> serial{1};
   std::atomic<ID> epoch{static_cast<ID>(std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count())};
@@ -193,6 +193,11 @@ struct Collector
   std::array<View, 32> viewHistory{};
   size_t nextViewHistory = 0;
   std::array<std::pair<uintptr_t, ID>, 16> surfaces{};
+  std::array<Published, BatchCapacity + 2> published{};
+  Collector()
+  {
+    for (size_t i = 0; i < publishedIndex.size(); ++i) publishedIndex[i].store(i);
+  }
 };
 Collector& collector()
 {
@@ -434,7 +439,7 @@ bool lostBefore(uint64_t timestamp, uint64_t endpoint = 0)
 {
   return timestamp && (!endpoint || timestamp <= endpoint);
 }
-// One reader can pin one buffer, leaving an alternate buffer for each writer.
+// Only one reader can pin a buffer, so two shared spares let publication continue while it holds an old snapshot.
 void publishBatches(Collector& c)
 {
   for (size_t i = 0; i < c.batches.size(); ++i)
@@ -442,12 +447,13 @@ void publishBatches(Collector& c)
     auto& batch = c.batches[i];
     if (!batch.dirty) continue;
     const auto current = c.publishedIndex[i].load();
-    for (size_t offset = 1; offset < 3; ++offset)
+    for (auto& spare : c.publishedSpare)
     {
-      const auto index = (current + offset) % 3;
-      auto& destination = c.published[i][index];
+      const auto index = spare;
+      auto& destination = c.published[index];
       int free = 0;
       if (!destination.readers.compare_exchange_strong(free, -1)) continue;
+      TILE_TRACE_TEST_HOOK("publication_claimed");
       destination.batch.session = batch.session;
       destination.batch.id = batch.id;
       destination.batch.count = batch.count;
@@ -456,6 +462,7 @@ void publishBatches(Collector& c)
       TILE_TRACE_TEST_COUNT("batch_members_copied", batch.count);
       destination.readers.store(0);
       c.publishedIndex[i].store(index);
+      spare = current;
       batch.dirty = false;
       break;
     }
@@ -1500,15 +1507,17 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
   LossLease lossLease(currentSession);
   {
     std::lock_guard<std::mutex> reader(c.snapshotMutex);
-    for (size_t i = 0; i < c.published.size(); ++i)
+    for (size_t i = 0; i < c.publishedIndex.size(); ++i)
     {
       for (;;)
       {
         const auto index = c.publishedIndex[i].load();
-        auto& source = c.published[i][index];
+        TILE_TRACE_TEST_HOOK("snapshot_index");
+        auto& source = c.published[index];
         int free = 0;
         if (!source.readers.compare_exchange_strong(free, 1)) continue;
         if (c.publishedIndex[i].load() != index) { source.readers.store(0); continue; }
+        TILE_TRACE_TEST_HOOK("snapshot_pinned");
         if (info.id && source.batch.id == info.id && source.batch.session == info.session)
         {
           batch.id = source.batch.id; batch.session = source.batch.session; batch.count = source.batch.count;
