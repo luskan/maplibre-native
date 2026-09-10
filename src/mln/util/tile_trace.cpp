@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <chrono>
 #include <mutex>
 #include <sstream>
@@ -9,6 +10,9 @@
 
 #ifndef TILE_TRACE_TEST_HOOK
 #define TILE_TRACE_TEST_HOOK(point) ((void)0)
+#endif
+#ifndef TILE_TRACE_TEST_COUNT
+#define TILE_TRACE_TEST_COUNT(point, value) ((void)0)
 #endif
 
 namespace mln::tiletrace {
@@ -79,6 +83,80 @@ struct Batch
   bool dirty = false;
   std::array<BatchMember, BatchMemberCapacity> members{};
 };
+struct RecordIndex
+{
+  static constexpr size_t BucketCount = 2048;
+  static_assert(Capacity < UINT16_MAX && BucketCount < UINT16_MAX);
+  std::array<uint16_t, BucketCount> heads{};
+  std::array<uint16_t, Capacity> next{}, previous{}, buckets{};
+
+  static size_t bucket(ID session, ID publication)
+  {
+    auto hash = publication ^ session;
+    hash ^= hash >> 30;
+    hash *= UINT64_C(0xbf58476d1ce4e5b9);
+    hash ^= hash >> 27;
+    hash *= UINT64_C(0x94d049bb133111eb);
+    return (hash ^ (hash >> 31)) & (BucketCount - 1);
+  }
+  void clear()
+  {
+    heads.fill(0); next.fill(0); previous.fill(0); buckets.fill(0);
+  }
+  void remove(size_t slot)
+  {
+    if (!buckets[slot]) return;
+    TILE_TRACE_TEST_HOOK("record_relink");
+    auto& head = heads[buckets[slot] - 1];
+    if (head == slot + 1)
+    {
+      head = next[slot];
+      if (head) previous[head - 1] = previous[slot];
+    }
+    else
+    {
+      next[previous[slot] - 1] = next[slot];
+      if (next[slot]) previous[next[slot] - 1] = previous[slot];
+      else previous[head - 1] = previous[slot];
+    }
+    next[slot] = previous[slot] = buckets[slot] = 0;
+  }
+  void update(size_t slot, const Context& context)
+  {
+    const auto target = context.id && (context.kind == Kind::Demand || context.kind == Kind::Publication)
+      ? static_cast<uint16_t>(bucket(context.session, context.publication) + 1) : uint16_t{0};
+    if (buckets[slot] == target) return;
+    remove(slot);
+    if (!target) return;
+    TILE_TRACE_TEST_HOOK("record_relink");
+    const auto link = static_cast<uint16_t>(slot + 1);
+    auto& head = heads[target - 1];
+    buckets[slot] = target;
+    if (!head)
+    {
+      head = link; previous[slot] = link;
+      return;
+    }
+    // The head's previous link holds the tail, so ordered appends do not scan the bucket.
+    const auto tail = previous[head - 1];
+    if (link < head)
+    {
+      next[slot] = head; previous[slot] = tail; previous[head - 1] = link; head = link;
+    }
+    else if (link > tail)
+    {
+      next[tail - 1] = link; previous[slot] = tail; previous[head - 1] = link;
+    }
+    else
+    {
+      auto predecessor = head;
+      while (next[predecessor - 1] < link) predecessor = next[predecessor - 1];
+      const auto successor = next[predecessor - 1];
+      next[slot] = successor; previous[slot] = predecessor;
+      next[predecessor - 1] = link; previous[successor - 1] = link;
+    }
+  }
+};
 struct Collector
 {
   std::mutex mutex, batchMutex, snapshotMutex;
@@ -98,6 +176,7 @@ struct Collector
   uint64_t evicted = 0, started = 0;
   ID retiredThrough = 0;
   std::array<Record, Capacity> records{};
+  RecordIndex recordIndex;
   std::array<Record, StartupCapacity> startup{};
   size_t startupCount = 0;
   std::array<Activity, 128> activity{};
@@ -365,6 +444,8 @@ void publishBatches(Collector& c)
       destination.batch.id = batch.id;
       destination.batch.count = batch.count;
       std::copy_n(batch.members.begin(), batch.count, destination.batch.members.begin());
+      TILE_TRACE_TEST_HOOK("batch_published");
+      TILE_TRACE_TEST_COUNT("batch_members_copied", batch.count);
       destination.readers.store(0);
       c.publishedIndex[i].store(index);
       batch.dirty = false;
@@ -399,6 +480,7 @@ Record& slot(Collector& c, ID id)
   auto& record = c.records[id % Capacity];
   if (record.context.id != id)
   {
+    c.recordIndex.remove(id % Capacity);
     if (record.context.id) {
       ++c.evicted;
       c.retiredThrough = std::max(c.retiredThrough, record.context.id);
@@ -431,7 +513,7 @@ void archive(Collector& c, const Record& record)
   }
   if (c.startupCount < StartupCapacity) c.startup[c.startupCount++] = record;
 }
-void merge(Record& record, const Context& context)
+void merge(Collector& c, Record& record, const Context& context)
 {
   auto times = record.context.time;
   const auto previous = record.context;
@@ -453,6 +535,7 @@ void merge(Record& record, const Context& context)
     for (size_t i = Draw; i < StageCount; ++i) record.context.time[i] = 0;
     record.context.outcome = Outcome::Truncated;
   }
+  c.recordIndex.update(static_cast<size_t>(&record - c.records.data()), record.context);
 }
 ViewTile viewTile(const Context& context)
 {
@@ -490,9 +573,12 @@ void rememberView(Collector& c, const View& view)
 {
   if (view.id) c.viewHistory[c.nextViewHistory++ % c.viewHistory.size()] = view;
 }
-void refreshUse(Collector& c, const BatchMember& member, ScreenUse& use, ID session)
+bool refreshUse(Collector& c, const BatchMember& member, ScreenUse& use, ID session)
 {
-  if (settled(use)) return;
+  if (settled(use)) return false;
+  TILE_TRACE_TEST_HOOK("use_refresh");
+  const auto state = [&] { return std::make_tuple(use.unknown, use.failed, use.leftUs, use.drawOrder, use.exact); };
+  const auto before = state();
   if (member.viewGap != viewGap(member.source)) use.unknown = true;
   const auto* current = currentView(c, member.map, member.source, session);
   if (current)
@@ -501,7 +587,7 @@ void refreshUse(Collector& c, const BatchMember& member, ScreenUse& use, ID sess
     if (index < current->count && current->requirements[index] == use.requirement)
     {
       use.failed |= current->invalidations[index] > member.view;
-      return;
+      return before != state();
     }
   }
   for (const auto& past : c.viewHistory)
@@ -513,27 +599,71 @@ void refreshUse(Collector& c, const BatchMember& member, ScreenUse& use, ID sess
     use.drawOrder = past.leftOrder;
     use.failed |= past.retired || past.invalidations[index] > member.view;
     use.exact = !use.unknown && !use.originalFailed && member.lossBaseline == c.gaps.load();
-    return;
+    return before != state();
   }
   use.unknown = true;
+  return before != state();
 }
 void refreshBatch(Collector& c, Batch& batch)
 {
-  batch.dirty = true;
   for (size_t i = 0; i < batch.count; ++i)
     for (size_t j = 0; j < batch.members[i].useCount; ++j)
-      refreshUse(c, batch.members[i], batch.members[i].uses[j], batch.session);
+      batch.dirty |= refreshUse(c, batch.members[i], batch.members[i].uses[j], batch.session);
 }
-void refreshSource(Collector& c, ID map, ID source)
+void refreshSource(Collector& c, ID map, ID source, const View* changedView = nullptr,
+                   const std::bitset<ViewTileLimit>* changedKeys = nullptr)
 {
+  const bool scoped = changedView && changedKeys && changedKeys->count() < changedView->count;
+  const auto gap = scoped ? viewGap(source) : 0;
+  const auto captureGap = c.gaps.load();
+  constexpr size_t RequiredSlots = ViewTileLimit * 2;
+  std::array<uint16_t, RequiredSlots> requirements;
+  if (scoped)
+  {
+    requirements.fill(0);
+    for (size_t i = 0; i < changedView->count; ++i)
+    {
+      auto slot = RecordIndex::bucket(0, changedView->requirements[i]) % RequiredSlots;
+      while (requirements[slot]) slot = (slot + 1) % RequiredSlots;
+      requirements[slot] = static_cast<uint16_t>(i + 1);
+    }
+  }
+  const auto currentRequirement = [&](const ScreenUse& use)
+  {
+    auto slot = RecordIndex::bucket(0, use.requirement) % RequiredSlots;
+    for (size_t i = 0; i < RequiredSlots && requirements[slot]; ++i)
+    {
+      const auto index = requirements[slot] - 1;
+      if (changedView->requirements[index] == use.requirement && changedView->tiles[index] == use.tile)
+        return static_cast<size_t>(index);
+      slot = (slot + 1) % RequiredSlots;
+    }
+    return changedView->count;
+  };
   for (auto& batch : c.batches)
     for (size_t i = 0; i < batch.count; ++i)
     {
       auto& member = batch.members[i];
       if (member.map != map || member.source != source) continue;
-      batch.dirty = true;
-      for (size_t j = 0; j < member.useCount; ++j) refreshUse(c, member, member.uses[j], batch.session);
+      for (size_t j = 0; j < member.useCount; ++j)
+      {
+        auto& use = member.uses[j];
+        if (settled(use)) continue;
+        if (scoped && batch.session == changedView->session && member.viewKnown && !member.useOverflow &&
+            member.viewGap == gap && changedView->gap == gap && member.lossBaseline == captureGap)
+        {
+          const auto index = currentRequirement(use);
+          if (index < changedView->count && !(*changedKeys)[index]) continue;
+        }
+        batch.dirty |= refreshUse(c, member, use, batch.session);
+      }
     }
+  if (scoped)
+  {
+    TILE_TRACE_TEST_HOOK("scoped_refresh");
+    // Loss writers do not need batchMutex, so a skipped use may have become uncertain.
+    if (gap != viewGap(source) || captureGap != c.gaps.load()) refreshSource(c, map, source);
+  }
 }
 void batchOutcome(Collector& c, const Context& context, EventBoundary evidence)
 {
@@ -638,7 +768,7 @@ void store(const Context& context) noexcept
     record.lossBaseline = c.lost.load() + c.gaps.load();
     record.beforeFirstDraw = !context.time[Draw];
   }
-  merge(record, context);
+  merge(c, record, context);
   archive(c, record);
 }
 void activity(int type, ID map, int value = 0) noexcept
@@ -697,6 +827,7 @@ void configure(bool capture, bool reset)
   {
     const auto nextEpoch = c.epoch.load() + 1;
     for (auto& record : c.records) record = {};
+    c.recordIndex.clear();
     for (auto& record : c.startup) record = {};
     c.startupCount = 0;
     for (auto& event : c.activity) event = {};
@@ -808,6 +939,7 @@ void bindDemand(const Context& context) noexcept
         archive(c, artifact);
       }
   }
+  c.recordIndex.update(context.demand % Capacity, record.context);
   archive(c, record);
 }
 void retireSource(ID source) noexcept
@@ -891,7 +1023,10 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
     std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
     if (!lock) { ++c.lost; return; }
     bool reused = false;
-    for (const auto& record : c.records) {
+    for (auto link = c.recordIndex.heads[RecordIndex::bucket(frame.session, original.publication)];
+         link; link = c.recordIndex.next[link - 1]) {
+      TILE_TRACE_TEST_HOOK("record_candidate");
+      const auto& record = c.records[link - 1];
       const auto& demand = record.context;
       if (demand.session == frame.session && demand.kind == Kind::Demand &&
           (demand.outcome == Outcome::Pending || demand.outcome == Outcome::Submitted) &&
@@ -989,7 +1124,7 @@ void swapEnd(bool success, int error) noexcept
     }
     auto& record = slot(c, drawn.context.id);
     const bool alreadySubmitted = record.context.time[Submitted] != 0;
-    merge(record, drawn.context);
+    merge(c, record, drawn.context);
     const auto contribution = drawn.symbol ? 1 : 0;
     if (!record.contributionDraw[contribution]) record.contributionDraw[contribution] = drawn.context.time[Draw];
     if (success && !record.historyLost && !record.contributionSubmit[contribution]) {
@@ -1009,8 +1144,11 @@ void swapEnd(bool success, int error) noexcept
     }
     if (!success) ++record.failedSwaps;
     archive(c, record);
-    for (auto& demand : c.records)
+    for (auto link = c.recordIndex.heads[RecordIndex::bucket(frame.session, drawn.context.publication)];
+         link; link = c.recordIndex.next[link - 1])
     {
+      TILE_TRACE_TEST_HOOK("record_candidate");
+      auto& demand = c.records[link - 1];
       auto& ctx = demand.context;
       if (ctx.session != frame.session || (ctx.outcome != Outcome::Pending && ctx.outcome != Outcome::Submitted)) continue;
       // Retained layouts can contain buckets from several accepted generations.
@@ -1147,6 +1285,7 @@ void invalidateView(ID map, ID source, const ViewTileRange* range) noexcept
     if (!view.id || view.map != map || view.source != source) continue;
     const auto previous = view;
     ID revision = 0;
+    std::bitset<ViewTileLimit> changedKeys;
     for (size_t i = 0; i < view.count; ++i)
     {
       bool intersects = !range;
@@ -1163,12 +1302,13 @@ void invalidateView(ID map, ID source, const ViewTileRange* range) noexcept
       if (!intersects) continue;
       if (!revision) revision = nextID();
       view.invalidations[i] = revision;
+      changedKeys.set(i);
     }
     if (revision)
     {
       rememberView(c, previous);
       view.id = revision;
-      refreshSource(c, map, source);
+      refreshSource(c, map, source, &view, &changedKeys);
       ++c.viewChanges;
     }
   }
