@@ -103,7 +103,7 @@ int main()
     const auto index = oldBank.bank->count.fetch_add(1);
     auto& event = oldBank.bank->events[index];
     event.publication = a.publication; event.source = a.source; event.timestamp = 201000;
-    event.kind = LostEvent::Outcome; event.ready = true;
+    event.kind = LostEvent::Outcome; event.boundary.eligibilityUs = event.timestamp; event.ready = true;
     cache(a); submit(layout(a)); dump("old_writer_after_reset");
   }
   begin(); a = member();
@@ -111,7 +111,7 @@ int main()
     LossLease lease(session()); const auto index = lease.bank->count.fetch_add(1);
     std::cout << "unfinished_loss\n{\"deferred\":" << (batchSnapshotJSON(info).empty() ? "true" : "false") << "}\n";
     auto& event = lease.bank->events[index]; event.publication = a.publication; event.source = a.source;
-    event.timestamp = now(); event.kind = LostEvent::Cache; event.ready = true;
+    event.timestamp = now(); event.kind = LostEvent::Cache; event.boundary.eligibilityUs = event.timestamp; event.ready = true;
   }
   cache(a); submit(layout(a)); dump("published_loss");
   begin();
@@ -122,7 +122,7 @@ int main()
   begin(); a = member(); setTestTime(201000);
   {
     LossLease lease(session()); auto& event = lease.bank->events[lease.bank->count.fetch_add(1)];
-    event.publication = 0; event.source = a.source; event.order = nextID();
+    event.publication = 0; event.source = a.source; event.boundary.viewOrder = nextID();
     event.timestamp = now(); event.kind = LostEvent::View; event.ready = true;
   }
   cache(a); submit(layout(a)); dump("view_loss_before_stamp");
@@ -131,7 +131,7 @@ int main()
   a.id = a.publication = nextID(); a.kind = Kind::Publication;
   {
     LossLease lease(session()); auto& event = lease.bank->events[lease.bank->count.fetch_add(1)];
-    event.publication = 0; event.source = a.source; event.order = nextID();
+    event.publication = 0; event.source = a.source; event.boundary.viewOrder = nextID();
     event.timestamp = 101000; event.kind = LostEvent::View; event.ready = true;
   }
   setTestTime(201000); ++info.total; trackBatchMember(info, a); cache(a); submit(layout(a));

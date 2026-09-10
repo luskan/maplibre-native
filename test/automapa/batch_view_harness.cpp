@@ -312,7 +312,7 @@ int main()
   begin({A}); a = member(A); la = layout(a); batch.endedUs = 201000;
   setTestTime(901000);
   std::atomic<bool> start{false};
-  std::atomic<unsigned> work{0}, reads{0};
+  std::atomic<unsigned> work{0}, reads{0}, deferred{0};
   std::thread renderer([&] {
     while (!start.load()) std::this_thread::yield();
     for (unsigned i = 0; i < 500; ++i)
@@ -330,9 +330,11 @@ int main()
     start = true;
     for (unsigned i = 0; i < 500; ++i)
       if (!batchSnapshotJSON(batch, true).empty()) ++reads;
+      else ++deferred;
   });
   renderer.join(); views.join(); snapshots.join();
-  std::cout << "concurrent_work\n{\"work\":" << work.load() << ",\"reads\":" << reads.load() << "}\n";
+  std::cout << "concurrent_work\n{\"work\":" << work.load() << ",\"reads\":" << reads.load()
+            << ",\"deferred\":" << deferred.load() << "}\n";
   dump("concurrent_final");
 
 }

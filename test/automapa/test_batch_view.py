@@ -183,7 +183,9 @@ class BatchViewTest(unittest.TestCase):
             self.assertEqual(self.samples[name]["status"], "complete")
 
     def test_concurrent_views_and_snapshots_do_not_stop_render_work(self):
-        self.assertEqual(self.samples["concurrent_work"], {"work": 500, "reads": 500})
+        value = self.samples["concurrent_work"]
+        self.assertEqual(value["work"], 500)
+        self.assertEqual(value["reads"] + value["deferred"], 500)
         value = self.samples["concurrent_final"]
         self.assertIn(value["status"], ("partial", "complete"))
         if value["status"] == "complete":

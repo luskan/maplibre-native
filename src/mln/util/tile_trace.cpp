@@ -7,6 +7,10 @@
 #include <sstream>
 #include <tuple>
 
+#ifndef TILE_TRACE_TEST_HOOK
+#define TILE_TRACE_TEST_HOOK(point) ((void)0)
+#endif
+
 namespace mln::tiletrace {
 namespace {
 constexpr size_t Capacity = 1024;
@@ -60,7 +64,7 @@ struct BatchMember
 };
 struct View
 {
-  ID session = 0, map = 0, source = 0, id = 0, style = 0;
+  ID session = 0, map = 0, source = 0, id = 0, style = 0, leftOrder = 0;
   uint64_t gap = 0;
   size_t count = 0;
   std::array<ViewTile, ViewTileLimit> tiles{};
@@ -115,10 +119,29 @@ Collector& collector()
   return value;
 }
 enum class LostEvent { Cache, Screen, Outcome, View };
+struct EventBoundary
+{
+  uint64_t time;
+  ID order;
+};
+EventBoundary eventBoundary() { return {now(), nextID()}; }
+bool before(EventBoundary a, EventBoundary b)
+{
+  return std::tie(a.time, a.order) < std::tie(b.time, b.order);
+}
+bool earlierBoundary(EventBoundary evidence, uint64_t time, ID order)
+{
+  return !time || before(evidence, {time, order});
+}
 struct CaptureLoss
 {
   std::atomic<bool> ready{false};
-  ID publication = 0, source = 0, order = 0;
+  ID publication = 0, source = 0;
+  union
+  {
+    ID viewOrder = 0;
+    uint64_t eligibilityUs;
+  } boundary;
   uint64_t timestamp = 0;
   LostEvent kind = LostEvent::Screen;
 };
@@ -127,7 +150,8 @@ struct LossBank
   std::atomic<int> readers{0};
   ID epoch = 0;
   std::atomic<size_t> count{0};
-  std::atomic<uint64_t> overflow{0};
+  std::atomic<size_t> writers{0};
+  std::atomic<uint64_t> overflow{0}, overflowEligibility{0};
   std::array<CaptureLoss, 8192> events{};
   struct Source { std::atomic<ID> key{0}, view{0}; };
   std::array<Source, 512> sources{};
@@ -149,7 +173,8 @@ void unbankedLoss(ID epoch)
 struct LossLease
 {
   LossBank* bank = nullptr;
-  size_t cutoff = 0;
+  size_t cutoff = 0, count = 0;
+  uint64_t overflow = 0, overflowEligibility = 0;
   explicit LossLease(ID epoch)
   {
     for (size_t attempt = 0; attempt < 16; ++attempt)
@@ -164,6 +189,20 @@ struct LossLease
     }
   }
   ~LossLease() { if (bank) --bank->readers; }
+  bool capture()
+  {
+    if (!bank) return true;
+    count = bank->count.load();
+    if (bank->writers.load()) return false;
+    cutoff = std::min(count, bank->events.size());
+    for (size_t i = 0; i < cutoff; ++i)
+      if (!bank->events[i].ready.load()) return false;
+    overflow = bank->overflow.load();
+    overflowEligibility = bank->overflowEligibility.load();
+    TILE_TRACE_TEST_HOOK("loss_read");
+    // The count detects writers that started and finished between these reads.
+    return !bank->writers.load() && count == bank->count.load();
+  }
   LossLease(const LossLease&) = delete;
   LossLease& operator=(const LossLease&) = delete;
 };
@@ -178,7 +217,9 @@ void resetLosses(ID epoch)
     if (!bank.readers.compare_exchange_strong(free, -1)) continue;
     bank.epoch = epoch;
     bank.count = 0;
+    bank.writers = 0;
     bank.overflow = 0;
+    bank.overflowEligibility = 0;
     for (auto& event : bank.events) event.ready = false;
     for (auto& source : bank.sources) { source.key = 0; source.view = 0; }
     bank.readers.store(0);
@@ -203,29 +244,57 @@ LossBank::Source* sourceSlot(LossBank& bank, ID key, bool create)
   }
   return nullptr;
 }
-void batchLoss(ID publication, ID source, LostEvent kind, ID epoch = 0)
+void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundary evidence, uint64_t eligibilityUs)
 {
   ++collector().lost;
-  if (!epoch) epoch = collector().epoch.load();
   LossLease lease(epoch);
   if (!lease.bank) { unbankedLoss(epoch); return; }
   auto& bank = *lease.bank;
-  const auto timestamp = now();
+  struct Writer
+  {
+    LossBank& bank;
+    explicit Writer(LossBank& value) : bank(value) { ++bank.writers; }
+    ~Writer() { --bank.writers; }
+  } writer(bank);
+  const auto timestamp = evidence.time ? evidence.time : 1;
+  eligibilityUs = eligibilityUs ? eligibilityUs : 1;
   const auto index = bank.count.fetch_add(1);
+  TILE_TRACE_TEST_HOOK("loss_reserved");
   if (index < bank.events.size())
   {
     auto& event = bank.events[index];
-    event.publication = publication; event.source = source; event.order = nextID();
+    event.publication = publication; event.source = source;
+    if (kind == LostEvent::View) event.boundary.viewOrder = evidence.order;
+    else event.boundary.eligibilityUs = eligibilityUs;
     event.timestamp = timestamp; event.kind = kind;
     event.ready.store(true);
   }
-  else firstTime(bank.overflow, timestamp);
+  else
+  {
+    firstTime(bank.overflow, timestamp);
+    TILE_TRACE_TEST_HOOK("loss_overflow_event");
+    firstTime(bank.overflowEligibility, eligibilityUs);
+  }
   if (kind == LostEvent::View)
   {
     if (auto* slot = sourceSlot(bank, source, true)) slot->view.store(nextID());
-    else firstTime(bank.overflow, timestamp);
+    else
+    {
+      firstTime(bank.overflow, timestamp);
+      firstTime(bank.overflowEligibility, eligibilityUs);
+    }
   }
 }
+void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundary evidence)
+{
+  batchLoss(publication, source, kind, epoch, evidence, evidence.time);
+}
+#ifdef TILE_TRACE_TESTING
+void batchLoss(ID publication, ID source, LostEvent kind, ID epoch = 0)
+{
+  batchLoss(publication, source, kind, epoch ? epoch : session(), eventBoundary());
+}
+#endif
 uint64_t viewGap(ID source)
 {
   LossLease lease(collector().epoch.load());
@@ -237,6 +306,7 @@ struct MemberLoss
 {
   uint64_t cache = 0, screen = 0, view = 0;
   ID viewOrder = 0;
+  uint64_t screenEligibility = 0;
 };
 void earliest(uint64_t& value, uint64_t timestamp)
 {
@@ -244,9 +314,9 @@ void earliest(uint64_t& value, uint64_t timestamp)
 }
 MemberLoss memberLoss(const LossLease& lease, const BatchMember& member)
 {
-  if (!lease.bank || unbankedLossEpoch.load() == lease.bank->epoch) return {1, 1, 1};
+  if (!lease.bank || unbankedLossEpoch.load() == lease.bank->epoch) return {1, 1, 1, 0, 1};
   const auto& bank = *lease.bank;
-  MemberLoss result{bank.overflow.load(), bank.overflow.load(), 0};
+  MemberLoss result{lease.overflow, lease.overflow, 0, 0, lease.overflowEligibility};
   for (size_t i = 0; i < lease.cutoff; ++i)
   {
     const auto& event = bank.events[i];
@@ -257,14 +327,18 @@ MemberLoss memberLoss(const LossLease& lease, const BatchMember& member)
     if (!event.publication && event.kind != LostEvent::View && event.timestamp < member.admittedUs) continue;
     if (event.kind == LostEvent::View)
     {
-      if (event.order > member.view && (!result.view || event.timestamp < result.view ||
-          (event.timestamp == result.view && event.order < result.viewOrder)))
-      { result.view = event.timestamp; result.viewOrder = event.order; }
+      if (event.boundary.viewOrder > member.view && (!result.view || event.timestamp < result.view ||
+          (event.timestamp == result.view && event.boundary.viewOrder < result.viewOrder)))
+      { result.view = event.timestamp; result.viewOrder = event.boundary.viewOrder; }
     }
     else
     {
       if (!demand && (event.kind == LostEvent::Cache || event.kind == LostEvent::Outcome)) earliest(result.cache, event.timestamp);
-      if (event.kind == LostEvent::Screen || event.kind == LostEvent::Outcome) earliest(result.screen, event.timestamp);
+      if (event.kind == LostEvent::Screen || event.kind == LostEvent::Outcome)
+      {
+        earliest(result.screen, event.timestamp);
+        earliest(result.screenEligibility, event.boundary.eligibilityUs);
+      }
     }
   }
   return result;
@@ -436,6 +510,7 @@ void refreshUse(Collector& c, const BatchMember& member, ScreenUse& use, ID sess
     const auto index = viewIndex(past, use.tile);
     if (index == past.count || past.requirements[index] != use.requirement || !past.leftTimes[index]) continue;
     use.leftUs = past.leftTimes[index];
+    use.drawOrder = past.leftOrder;
     use.failed |= past.retired || past.invalidations[index] > member.view;
     use.exact = !use.unknown && !use.originalFailed && member.lossBaseline == c.gaps.load();
     return;
@@ -460,7 +535,7 @@ void refreshSource(Collector& c, ID map, ID source)
       for (size_t j = 0; j < member.useCount; ++j) refreshUse(c, member, member.uses[j], batch.session);
     }
 }
-void batchOutcome(Collector& c, const Context& context)
+void batchOutcome(Collector& c, const Context& context, EventBoundary evidence)
 {
   if (context.kind == Kind::Demand && context.outcome != Outcome::Pending)
   {
@@ -488,19 +563,20 @@ void batchOutcome(Collector& c, const Context& context)
             batch.dirty = true;
             if (context.outcome == Outcome::Cancelled || context.outcome == Outcome::Teardown)
             {
-              if (!member.retiredUs)
+              if (earlierBoundary(evidence, member.retiredUs, member.retirementOrder))
               {
-                member.retiredUs = now();
-                member.retirementOrder = nextID();
+                member.retiredUs = evidence.time;
+                member.retirementOrder = evidence.order;
                 member.retirement = context.outcome == Outcome::Cancelled ? Retirement::Cancelled : Retirement::Shutdown;
               }
               continue;
             }
-            if (member.retiredUs && context.outcome == Outcome::NoReceiver && member.retiredUs <= now()) continue;
-            if (!member.failedUs)
+            if (member.retiredUs && context.outcome == Outcome::NoReceiver &&
+                !before(evidence, {member.retiredUs, member.retirementOrder})) continue;
+            if (earlierBoundary(evidence, member.failedUs, member.failureOrder))
             {
-              member.failedUs = now();
-              member.failureOrder = nextID();
+              member.failedUs = evidence.time;
+              member.failureOrder = evidence.order;
               member.failure = context.outcome;
             }
             member.publicationFailed = true;
@@ -513,10 +589,10 @@ void batchOutcome(Collector& c, const Context& context)
         for (size_t j = 0; j < member.useCount; ++j)
         {
           auto& use = member.uses[j];
-          if (settled(use) || !(use.tile == viewTile(context))) continue;
-          use.failed = true;
-          if (context.outcome == Outcome::Error && !use.failedUs)
-          { use.failedUs = now(); use.failureOrder = nextID(); use.failure = context.outcome; }
+          if (!(use.tile == viewTile(context))) continue;
+          if (context.outcome == Outcome::Error && earlierBoundary(evidence, use.failedUs, use.failureOrder))
+          { use.failedUs = evidence.time; use.failureOrder = evidence.order; use.failure = context.outcome; }
+          if (!settled(use)) use.failed = true;
         }
       }
 }
@@ -665,26 +741,29 @@ void mark(Context& context, Stage stage) noexcept
 }
 void finish(Context& context, Outcome outcome) noexcept
 {
+  const auto evidence = eventBoundary();
   context.outcome = outcome;
   if (context.id && context.session == session() && enabled() && outcome != Outcome::Pending &&
       outcome != Outcome::Submitted && outcome != Outcome::Empty &&
       !(context.kind == Kind::Demand && outcome == Outcome::Cancelled))
   {
     auto& c = collector();
+    TILE_TRACE_TEST_HOOK("finish_boundary");
     BatchWrite lock(c);
-    if (lock) batchOutcome(c, context);
+    if (lock) batchOutcome(c, context, evidence);
     else batchLoss(context.kind == Kind::Demand ? context.id : context.publication, context.source,
-                   context.kind == Kind::Demand ? LostEvent::Screen : LostEvent::Outcome, context.session);
+                   context.kind == Kind::Demand ? LostEvent::Screen : LostEvent::Outcome, context.session, evidence);
   }
   store(context);
 }
 void bindDemand(const Context& context) noexcept
 {
+  const auto evidence = eventBoundary();
   auto& c = collector();
   if (!context.demand || context.session != session()) return;
   {
     BatchWrite batchLock(c);
-    if (!batchLock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session);
+    if (!batchLock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence);
     else
     {
   for (auto& batch : c.batches)
@@ -697,7 +776,7 @@ void bindDemand(const Context& context) noexcept
           continue;
         if (std::find(member.demands.begin(), member.demands.end(), context.demand) != member.demands.end()) continue;
         const auto free = std::find(member.demands.begin(), member.demands.end(), 0);
-        if (free == member.demands.end()) batchLoss(context.publication, context.source, LostEvent::Screen, context.session);
+        if (free == member.demands.end()) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence);
         else { *free = context.demand; batch.dirty = true; }
       }
     }
@@ -733,13 +812,15 @@ void bindDemand(const Context& context) noexcept
 }
 void retireSource(ID source) noexcept
 {
+  const auto evidence = eventBoundary();
   auto& c = collector();
+  const auto epoch = c.epoch.load();
   {
   BatchWrite lock(c);
   if (!lock)
   {
-    batchLoss(0, source, LostEvent::Outcome);
-    batchLoss(0, source, LostEvent::View);
+    batchLoss(0, source, LostEvent::Outcome, epoch, evidence);
+    batchLoss(0, source, LostEvent::View, epoch, evidence);
     ++c.viewChanges;
     return;
   }
@@ -747,7 +828,8 @@ void retireSource(ID source) noexcept
     if (view.id && view.source == source)
     {
       view.retired = true;
-      for (size_t i = 0; i < view.count; ++i) view.leftTimes[i] = now();
+      view.leftOrder = evidence.order;
+      for (size_t i = 0; i < view.count; ++i) view.leftTimes[i] = evidence.time;
       rememberView(c, view);
       view.id = 0;
     }
@@ -757,7 +839,8 @@ void retireSource(ID source) noexcept
     {
       auto& member = batch.members[i];
       if (member.source != source) continue;
-      if (!member.retiredUs) { member.retiredUs = now(); member.retirementOrder = nextID(); member.retirement = Retirement::Shutdown; }
+      if (earlierBoundary(evidence, member.retiredUs, member.retirementOrder))
+      { member.retiredUs = evidence.time; member.retirementOrder = evidence.order; member.retirement = Retirement::Shutdown; }
       batch.dirty = true;
     }
     refreshBatch(c, batch);
@@ -789,6 +872,7 @@ FrameScope::~FrameScope()
 }
 void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile) noexcept
 {
+  const auto evidence = eventBoundary();
   auto original = originalTrace;
   if (actualTile)
   {
@@ -822,17 +906,17 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
     }
     if (!reused) return;
   }
-  if (frame.count == FrameCapacity) { batchLoss(original.publication, original.source, LostEvent::Screen, original.session); return; }
+  if (frame.count == FrameCapacity) { batchLoss(original.publication, original.source, LostEvent::Screen, original.session, evidence); return; }
   for (size_t i = Draw; i < StageCount; ++i) context.time[i] = 0;
   context.outcome = Outcome::Pending;
   auto& record = frame.draws[frame.count];
   record = {}; record.context = context; record.symbol = symbol; record.frame = frame.id;
-  record.context.time[Draw] = now();
-  record.drawOrder = nextID();
+  record.context.time[Draw] = evidence.time;
+  record.drawOrder = evidence.order;
   {
     auto& c = collector();
     BatchWrite lock(c);
-    if (!lock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session);
+    if (!lock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence);
     else if (const auto* view = currentView(c, context.map, context.source, context.session))
     {
       const auto index = viewIndex(*view, viewTile(context));
@@ -874,10 +958,10 @@ void swapBegin(uintptr_t surface) noexcept
 void swapEnd(bool success, int error) noexcept
 {
   if (!frame.id || frame.session != session()) return;
+  const auto time = now();
   frame.swapped = true;
   activity(success ? 7 : 9, 0, error);
   auto& c = collector();
-  const auto time = now();
   if (success)
   {
     BatchWrite batchLock(c);
@@ -885,7 +969,8 @@ void swapEnd(bool success, int error) noexcept
     {
       const auto& drawn = frame.draws[i];
       if (batchLock) batchUse(c, drawn.context, time, frame.id, false, drawn.drawRequirement, drawn.drawOrder);
-      else batchLoss(drawn.context.publication, drawn.context.source, LostEvent::Screen, drawn.context.session);
+      else batchLoss(drawn.context.publication, drawn.context.source, LostEvent::Screen, drawn.context.session,
+                     {time, drawn.drawOrder}, drawn.context.time[Draw]);
     }
   }
   std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
@@ -989,11 +1074,12 @@ bool ViewTile::operator<(const ViewTile& other) const noexcept
 uint64_t viewSerial() noexcept { return collector().viewChanges.load(); }
 ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) noexcept
 {
+  const auto evidence = eventBoundary();
   if (!map || !source) return 0;
   auto& c = collector();
   const auto missing = [&]() -> ID
   {
-    batchLoss(0, source, LostEvent::View); ++c.viewChanges;
+    batchLoss(0, source, LostEvent::View, c.epoch.load(), evidence); ++c.viewChanges;
     return 0;
   };
 #ifdef TILE_TRACE_TESTING
@@ -1025,7 +1111,8 @@ ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) 
       std::equal(sorted.begin(), sorted.begin() + count, view->tiles.begin())) return view->id;
   auto previous = *view;
   const bool continuous = previous.id && previous.gap == gap;
-  const auto timestamp = now();
+  const auto timestamp = evidence.time;
+  previous.leftOrder = evidence.order;
   if (continuous)
     for (size_t i = 0; i < previous.count; ++i)
       if (!std::binary_search(sorted.begin(), sorted.begin() + count, previous.tiles[i]))
@@ -1035,6 +1122,7 @@ ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) 
   view->id = nextID(); view->style = style; view->gap = gap; view->count = count;
   view->tiles = sorted;
   view->leftTimes.fill(0);
+  view->leftOrder = 0;
   view->retired = false;
   for (size_t i = 0; i < count; ++i)
   {
@@ -1049,10 +1137,11 @@ ID updateView(ID map, ID source, ID style, const ViewTile* tiles, size_t count) 
 }
 void invalidateView(ID map, ID source, const ViewTileRange* range) noexcept
 {
+  const auto evidence = eventBoundary();
   if (!map || !source) return;
   auto& c = collector();
   BatchWrite lock(c);
-  if (!lock) { batchLoss(0, source, LostEvent::View); ++c.viewChanges; return; }
+  if (!lock) { batchLoss(0, source, LostEvent::View, c.epoch.load(), evidence); ++c.viewChanges; return; }
   for (auto& view : c.views)
   {
     if (!view.id || view.map != map || view.source != source) continue;
@@ -1087,9 +1176,10 @@ void invalidateView(ID map, ID source, const ViewTileRange* range) noexcept
 
 void trackBatchMember(const BatchInfo& info, const Context& context) noexcept
 {
+  const auto evidence = eventBoundary();
   auto& c = collector();
   BatchWrite lock(c);
-  if (!lock) { batchLoss(context.publication, context.source, LostEvent::Outcome, context.session); return; }
+  if (!lock) { batchLoss(context.publication, context.source, LostEvent::Outcome, context.session, evidence); return; }
   Batch* batch = nullptr;
   for (auto& candidate : c.batches)
     if (candidate.id == info.id && candidate.session == info.session) batch = &candidate;
@@ -1108,7 +1198,7 @@ void trackBatchMember(const BatchInfo& info, const Context& context) noexcept
   member.map = context.map; member.source = context.source; member.view = context.view;
   member.demands[0] = context.demand;
   member.tile = viewTile(context);
-  member.admittedUs = now();
+  member.admittedUs = evidence.time;
   member.lossBaseline = c.gaps.load();
   member.viewGap = viewGap(context.source);
   member.publicationFailed = !c.capture.load() || !context.publication || context.session != info.session;
@@ -1144,10 +1234,12 @@ void trackBatchMember(const BatchInfo& info, const Context& context) noexcept
 
 void batchCacheAdmission(const Context& context, bool stored, uint64_t timestamp) noexcept
 {
+  const auto evidence = eventBoundary();
   auto& c = collector();
   if (!context.publication || !c.capture.load() || context.session != c.epoch.load()) return;
   BatchWrite lock(c);
-  if (!lock) { batchLoss(context.publication, context.source, LostEvent::Cache, context.session); return; }
+  if (!lock) { batchLoss(context.publication, context.source, LostEvent::Cache, context.session, {timestamp, evidence.order}); return; }
+  if (!timestamp) batchLoss(context.publication, context.source, LostEvent::Cache, context.session, {0, evidence.order});
   for (auto& batch : c.batches)
     if (batch.session == context.session)
       for (size_t i = 0; i < batch.count; ++i)
@@ -1158,7 +1250,7 @@ void batchCacheAdmission(const Context& context, bool stored, uint64_t timestamp
         if (context.outcome == Outcome::Error || !timestamp)
         {
           member.mlFailed = true;
-          if (context.outcome == Outcome::Error) batchOutcome(c, context);
+          if (context.outcome == Outcome::Error) batchOutcome(c, context, evidence);
           continue;
         }
         member.cachedUs = stored ? timestamp : 0;
@@ -1171,18 +1263,19 @@ void retireBatchTile(ID map, ID source, uint8_t z, uint32_t x, uint32_t y, Retir
 {
   if (!enabled() || !map || !source || reason == Retirement::None) return;
   auto& c = collector();
-  const auto timestamp = now();
+  const auto evidence = eventBoundary();
+  const auto epoch = c.epoch.load();
   BatchWrite lock(c);
-  if (!lock) { batchLoss(0, source, LostEvent::Outcome); return; }
+  if (!lock) { batchLoss(0, source, LostEvent::Outcome, epoch, evidence); return; }
   for (auto& batch : c.batches)
     if (batch.session == c.epoch.load())
       for (size_t i = 0; i < batch.count; ++i)
       {
         auto& member = batch.members[i];
         if (member.map != map || member.source != source || member.tile.z != z || member.tile.x != x ||
-            member.tile.y != y || member.retiredUs) continue;
-        member.retiredUs = timestamp;
-        member.retirementOrder = nextID();
+            member.tile.y != y || !earlierBoundary(evidence, member.retiredUs, member.retirementOrder)) continue;
+        member.retiredUs = evidence.time;
+        member.retirementOrder = evidence.order;
         member.retirement = reason;
         batch.dirty = true;
       }
@@ -1190,6 +1283,7 @@ void retireBatchTile(ID map, ID source, uint8_t z, uint32_t x, uint32_t y, Retir
 
 void batchLayoutAccepted(const Context& original, bool noDrawNeeded, ID evaluatedView, const ViewTile* actualTile) noexcept
 {
+  const EventBoundary evidence{original.time[Layout], nextID()};
   auto context = original;
   if (actualTile)
   {
@@ -1199,13 +1293,13 @@ void batchLayoutAccepted(const Context& original, bool noDrawNeeded, ID evaluate
   auto& c = collector();
   if (!noDrawNeeded || !c.capture.load() || context.session != c.epoch.load()) return;
   BatchWrite lock(c);
-  if (!lock) { batchLoss(context.publication, context.source, LostEvent::Screen, context.session); return; }
+  if (!lock) { batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence); return; }
   const auto* view = currentView(c, context.map, context.source, context.session);
   if (!view || view->id != (evaluatedView ? evaluatedView : context.view) || view->gap != viewGap(context.source)) return;
   const auto index = viewIndex(*view, viewTile(context));
   if (index == view->count || view->invalidations[index] > context.view) return;
   if (context.kind == Kind::Layout && context.time[Layout])
-    batchUse(c, context, 0, 0, true, view->requirements[index], nextID());
+    batchUse(c, context, 0, 0, true, view->requirements[index], evidence.order);
 }
 
 std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
@@ -1237,12 +1331,7 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
       }
     }
   }
-  if (lossLease.bank)
-  {
-    lossLease.cutoff = std::min(lossLease.bank->count.load(), lossLease.bank->events.size());
-    for (size_t i = 0; i < lossLease.cutoff; ++i)
-      if (!lossLease.bank->events[i].ready.load()) return {};
-  }
+  if (!lossLease.capture()) return {};
   uint64_t visible = 0, drawn = 0, noDraw = 0, left = 0, lastSwap = 0, cached = 0, bypassed = 0, lastCache = 0;
   uint64_t mlExcluded = 0, screenExcluded = 0;
   const bool missing = batch.id != info.id || info.session != currentSession || batch.count != info.total;
@@ -1272,7 +1361,7 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
     }
     if (!member.viewKnown || member.useOverflow)
     {
-      if (!retired) { screenPartial = true; if (!*screenReason) screenReason = "membership"; }
+      screenPartial = true; if (!*screenReason) screenReason = "membership";
     }
     for (size_t j = 0; j < member.useCount; ++j)
     {
@@ -1280,7 +1369,7 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
       if (retired && (!use.failedUs || member.retiredUs < use.failedUs ||
           (member.retiredUs == use.failedUs && member.retirementOrder < use.failureOrder)) &&
           (!use.drawUs || member.retiredUs < use.drawUs) &&
-          !lostBefore(captureLoss.screen, member.retiredUs) &&
+          !lostBefore(captureLoss.screenEligibility, member.retiredUs) &&
           !lostBefore(captureLoss.view, member.retiredUs))
       { ++screenExcluded; continue; }
       ++visible;
@@ -1292,12 +1381,22 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
       const auto viewEndpoint = use.drawUs ? use.drawUs : endpoint;
       const bool viewLost = lostBefore(captureLoss.view, viewEndpoint) &&
         (!viewEndpoint || captureLoss.view != viewEndpoint || !use.drawOrder || captureLoss.viewOrder <= use.drawOrder);
-      const bool gap = lostBefore(captureLoss.screen, endpoint) || viewLost ||
+      const auto screenLoss = use.leftUs && !resolved(use) ? captureLoss.screenEligibility : captureLoss.screen;
+      const bool gap = lostBefore(screenLoss, endpoint) || viewLost ||
         (!settled(use) && (member.viewGap != viewGap(member.source) || member.lossBaseline != losses));
       bool failed = false;
       if (resolved(use)) failed = !use.exact;
       else if (use.leftUs) failed = !use.exact || use.failed;
       else failed = use.unknown || use.failed || member.publicationFailed;
+      const auto failureEndpoint = use.drawUs ? use.drawUs : use.leftUs;
+      const auto precedesEndpoint = [&](uint64_t time, ID order)
+      {
+        return time && (!failureEndpoint || time < failureEndpoint ||
+          (time == failureEndpoint && (!use.drawOrder || order <= use.drawOrder)));
+      };
+      // A delayed error can predate a draw that was already recorded as complete.
+      failed |= precedesEndpoint(member.failedUs, member.failureOrder) ||
+        (!resolved(use) && precedesEndpoint(use.failedUs, use.failureOrder));
       screenPartial |= failed || gap;
       if (!*screenReason && gap) screenReason = "capture";
       if (!*screenReason && failed) screenReason = use.failure != Outcome::Pending ? outcomeName(use.failure) :
@@ -1335,7 +1434,7 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
       << ",\"minX\":" << info.minX << ",\"maxX\":" << info.maxX
       << ",\"minY\":" << info.minY << ",\"maxY\":" << info.maxY
       << ",\"inFlight\":" << info.inFlight
-      << ",\"captureLost\":" << (lossLease.bank ? lossLease.bank->count.load() : 0)
+      << ",\"captureLost\":" << lossLease.count
       << ",\"mlEligible\":" << mlEligible << ",\"mlExcluded\":" << mlExcluded
       << ",\"screenExcluded\":" << screenExcluded
       << ",\"mlReason\":\"" << mlReason << "\",\"screenReason\":\"" << screenReason << "\"";
