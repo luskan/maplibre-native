@@ -45,7 +45,8 @@ public:
                          .prefetchZoomDelta = 0,
                          .threadPool = threadPool,
                          .dynamicTextureAtlas = dynamicTextureAtlas,
-                         .geometryTileZoomState = {}},
+                         .geometryTileZoomState = {},
+                         .traceEvaluationZoom = {}},
           style{fileSource, 1, threadPool} {}
 
     ~VectorTileTest() {

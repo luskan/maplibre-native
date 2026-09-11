@@ -896,6 +896,8 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geojson_tile.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geojson_tile.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geojson_tile_data.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/geojson_geometry_memo.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/geojson_geometry_memo.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_data.cpp

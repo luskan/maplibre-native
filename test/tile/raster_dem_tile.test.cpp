@@ -42,7 +42,8 @@ public:
                          .prefetchZoomDelta = 0,
                          .threadPool = {Scheduler::GetBackground(), uniqueID},
                          .dynamicTextureAtlas = dynamicTextureAtlas,
-                         .geometryTileZoomState = {}},
+                         .geometryTileZoomState = {},
+                         .traceEvaluationZoom = {}},
           style{fileSource, 1, tileParameters.threadPool} {}
 };
 

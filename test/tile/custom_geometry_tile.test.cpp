@@ -14,10 +14,23 @@
 #include <mln/style/style.hpp>
 #include <mln/style/layers/circle_layer.hpp>
 #include <mln/style/layers/circle_layer_impl.hpp>
+#include <mln/style/layers/fill_layer.hpp>
+#include <mln/style/layers/fill_layer_impl.hpp>
+#include <mln/style/layers/symbol_layer.hpp>
+#include <mln/style/layers/symbol_layer_impl.hpp>
+#include <mln/style/image_impl.hpp>
+#include <mln/test/geometry_memo_observer.hpp>
+#include <mln/tile/geojson_tile_data.hpp>
+#include <mln/style/sources/custom_geometry_source_impl.hpp>
+#include <mln/style/custom_tile_conversion.hpp>
 #include <mln/annotation/annotation_manager.hpp>
 #include <mln/renderer/image_manager.hpp>
+#include <mln/renderer/image_manager_observer.hpp>
 #include <mln/text/glyph_manager.hpp>
 #include <mln/gfx/dynamic_texture_atlas.hpp>
+#include <mln/gfx/headless_backend.hpp>
+#include <mln/gfx/backend_scope.hpp>
+#include <mln/renderer/bucket.hpp>
 
 #include <future>
 #include <memory>
@@ -51,7 +64,8 @@ public:
                          .prefetchZoomDelta = 0,
                          .threadPool = {Scheduler::GetBackground(), uniqueID},
                          .dynamicTextureAtlas = dynamicTextureAtlas,
-                         .geometryTileZoomState = {}},
+                         .geometryTileZoomState = {},
+                         .traceEvaluationZoom = {}},
           style{fileSource, 1, tileParameters.threadPool} {}
 
     template <class Predicate>
@@ -629,4 +643,178 @@ TEST(CustomGeometryTile, DestructorRemovesOnlyItsOwnRegistration) {
     EXPECT_EQ(afterRemove.bypasses + 1, getCustomTileLoaderDataCacheStats().bypasses);
 
     survivorMailbox->close();
+}
+
+TEST(CustomGeometryTile, MemoSurvivesDeferredPatternAndSymbolLayoutAndQueries) {
+  std::vector<Feature> baselineQuery;
+  for (bool memoize : {false, true}) {
+    auto backend = gfx::HeadlessBackend::Create();
+    gfx::BackendScope backendScope{*backend->getRendererBackend()};
+    CustomTileTest test;
+    test.dynamicTextureAtlas = std::make_shared<gfx::DynamicTextureAtlas>(backend->getRendererBackend()->getContext());
+    test.tileParameters.dynamicTextureAtlas = test.dynamicTextureAtlas;
+    struct DeferredImages : ImageManagerObserver {
+      std::vector<std::function<void()>> completions;
+      void onStyleImageMissing(const std::string&, const std::function<void()>& done) override {
+        completions.push_back(done);
+      }
+    } images;
+    test.imageManager->setObserver(&images);
+    test.imageManager->setLoaded(true);
+    auto observer = std::make_shared<test::GeometryMemoTestObserver>();
+    auto options = makeMutable<CustomGeometrySource::TileOptions>();
+    options->memoizeGeometry = memoize;
+    options->geometryMemoObserver = observer;
+    CustomTileLoader loader(nullptr, nullptr);
+    auto mailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+    ActorRef<CustomTileLoader> loaderActor(loader, mailbox);
+    struct InspectableTile : CustomGeometryTile {
+      using CustomGeometryTile::CustomGeometryTile;
+      using GeometryTile::getLayerRenderData;
+      using GeometryTile::getData;
+    } tile(OverscaledTileID(0, 0, 0), "source-a", test.tileParameters,
+           std::move(options), loaderActor);
+    FillLayer fill("fill", "source-a");
+    fill.setFillPattern(expression::Image("pattern"));
+    SymbolLayer symbol("symbol", "source-a");
+    symbol.setIconImage(expression::Image("icon"));
+    auto fillMutable = makeMutable<FillLayerProperties>(
+      staticImmutableCast<FillLayer::Impl>(fill.baseImpl));
+    fillMutable->evaluated.get<FillPattern>() = PossiblyEvaluatedPropertyValue<Faded<expression::Image>>(
+      Faded<expression::Image>{.from = "pattern", .to = "pattern"});
+    Immutable<LayerProperties> fillProperties = std::move(fillMutable);
+    Immutable<LayerProperties> symbolProperties = makeMutable<SymbolLayerProperties>(
+      staticImmutableCast<SymbolLayer::Impl>(symbol.baseImpl));
+    tile.setLayers({fillProperties, symbolProperties});
+    FeatureCollection features;
+    features.emplace_back(mapbox::geometry::polygon<double>{{{-5, -5}, {5, -5}, {5, 5}, {-5, 5}, {-5, -5}}});
+    features.back().properties["name"] = std::string("polygon");
+    features.emplace_back(mapbox::geometry::point<double>{0, 0});
+    features.back().properties["name"] = std::string("point");
+    tile.setTileData(CustomGeometryTile::processTileData(features, CanonicalTileID(0, 0, 0), {}));
+    ASSERT_TRUE(test.waitUntil([&] { return images.completions.size() == 2; }));
+    EXPECT_FALSE(tile.isComplete());
+    test.imageManager->addImage(makeMutable<style::Image::Impl>("pattern", PremultipliedImage({16, 16}), 1.0f));
+    test.imageManager->addImage(makeMutable<style::Image::Impl>("icon", PremultipliedImage({16, 16}), 1.0f));
+    for (const auto& done : images.completions) done();
+    ASSERT_TRUE(test.waitUntil([&] { return !tile.hasPendingRequests(); }));
+    test.imageManager->notifyIfMissingImageAdded();
+    ASSERT_TRUE(test.waitUntil([&] { return tile.isComplete(); }));
+    ASSERT_TRUE(tile.isRenderable());
+    auto firstLayer = tile.getData()->getLayer("fill");
+    auto secondLayer = tile.getData()->getLayer("symbol");
+    auto firstFeature = firstLayer->getFeature(0);
+    auto secondFeature = secondLayer->getFeature(0);
+    EXPECT_EQ(memoize,
+              &firstFeature->getGeometries() == &secondFeature->getGeometries());
+    auto* fillData = tile.getLayerRenderData(*fill.baseImpl);
+    auto* symbolData = tile.getLayerRenderData(*symbol.baseImpl);
+    ASSERT_TRUE(fillData && fillData->bucket && fillData->bucket->hasData());
+    ASSERT_TRUE(symbolData && symbolData->bucket && symbolData->bucket->hasData());
+    auto retainedIndex = tile.getFeatureIndex();
+    ASSERT_TRUE(retainedIndex);
+    std::vector<Feature> firstQuery;
+    tile.querySourceFeatures(firstQuery, {});
+    ASSERT_EQ(features.size(), firstQuery.size());
+    tile.setLayers({fillProperties, symbolProperties});
+    ASSERT_TRUE(test.waitUntil([&] { return tile.isComplete(); }));
+    std::vector<Feature> secondQuery;
+    tile.querySourceFeatures(secondQuery, {});
+    EXPECT_EQ(firstQuery, secondQuery);
+    EXPECT_EQ(features.front().properties, secondQuery.front().properties);
+    if (!memoize) baselineQuery = secondQuery;
+    else EXPECT_EQ(baselineQuery, secondQuery);
+    mailbox->close();
+  }
+}
+
+TEST(CustomGeometryTile, SourceOptionsKeepMemoizationIndependentAcrossCacheHits) {
+  CustomTileTest test;
+  struct InspectableTile : CustomGeometryTile {
+    using CustomGeometryTile::CustomGeometryTile;
+    using GeometryTile::getData;
+    bool sharesGeometry() const {
+      auto firstLayer = getData()->getLayer("first");
+      auto secondLayer = getData()->getLayer("second");
+      auto first = firstLayer->getFeature(0);
+      auto second = secondLayer->getFeature(0);
+      return &first->getGeometries() == &second->getGeometries();
+    }
+  };
+  auto enabled = makeMutable<CustomGeometrySource::TileOptions>();
+  enabled->memoizeGeometry = true;
+  auto observed = makeMutable<CustomGeometrySource::TileOptions>();
+  auto observer = std::make_shared<mln::test::GeometryMemoTestObserver>();
+  observed->geometryMemoObserver = observer;
+  Immutable<CustomGeometrySource::TileOptions> optionsA = std::move(enabled);
+  Immutable<CustomGeometrySource::TileOptions> optionsB = std::move(observed);
+  std::size_t fetchesA = 0, fetchesB = 0;
+  CustomTileLoader loaderA([&](const CanonicalTileID&) { ++fetchesA; }, nullptr, *optionsA);
+  CustomTileLoader loaderB([&](const CanonicalTileID&) { ++fetchesB; }, nullptr, *optionsB);
+  auto mailboxA = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+  auto mailboxB = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+  ActorRef<CustomTileLoader> actorA(loaderA, mailboxA), actorB(loaderB, mailboxB);
+  const OverscaledTileID tileID(0, 0, 0);
+  InspectableTile tileA(tileID, "source-a", test.tileParameters, optionsA, actorA);
+  InspectableTile tileB(tileID, "source-b", test.tileParameters, optionsB, actorB);
+  InspectableTile cachedA(tileID, "source-a", test.tileParameters, optionsA, actorA);
+  InspectableTile cachedB(tileID, "source-b", test.tileParameters, optionsB, actorB);
+  CircleLayer layerA("a", "source-a"), layerB("b", "source-b");
+  Immutable<LayerProperties> propertiesA = makeMutable<CircleLayerProperties>(
+    staticImmutableCast<CircleLayer::Impl>(layerA.baseImpl));
+  Immutable<LayerProperties> propertiesB = makeMutable<CircleLayerProperties>(
+    staticImmutableCast<CircleLayer::Impl>(layerB.baseImpl));
+  tileA.setLayers({propertiesA});
+  cachedA.setLayers({propertiesA});
+  tileB.setLayers({propertiesB});
+  cachedB.setLayers({propertiesB});
+  std::array<std::shared_ptr<Mailbox>, 4> receivers;
+  for (auto& receiver : receivers) receiver = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+  ActorRef<CustomGeometryTile> receiverA(tileA, receivers[0]), receiverB(tileB, receivers[1]);
+  ActorRef<CustomGeometryTile> receiverCachedA(cachedA, receivers[2]), receiverCachedB(cachedB, receivers[3]);
+  auto features = std::make_shared<FeatureCollection>();
+  features->emplace_back(mapbox::geometry::point<double>{0, 0});
+  loaderA.fetchTile(tileID, receiverA, nextCustomTileRegistrationToken());
+  loaderB.fetchTile(tileID, receiverB, nextCustomTileRegistrationToken());
+  loaderA.setTileFeatures(tileID.canonical, features);
+  loaderB.setTileFeatures(tileID.canonical, features);
+  ASSERT_TRUE(test.waitUntil([&] { return tileA.isComplete() && tileB.isComplete(); }));
+  EXPECT_TRUE(tileA.sharesGeometry());
+  EXPECT_FALSE(tileB.sharesGeometry());
+  const auto hits = getCustomTileLoaderDataCacheStats().hits;
+  loaderA.fetchTile(tileID, receiverCachedA, nextCustomTileRegistrationToken());
+  loaderB.fetchTile(tileID, receiverCachedB, nextCustomTileRegistrationToken());
+  ASSERT_TRUE(test.waitUntil([&] { return cachedA.isComplete() && cachedB.isComplete(); }));
+  EXPECT_EQ(hits + 2, getCustomTileLoaderDataCacheStats().hits);
+  EXPECT_EQ(1u, fetchesA);
+  EXPECT_EQ(1u, fetchesB);
+  EXPECT_TRUE(cachedA.sharesGeometry());
+  EXPECT_FALSE(cachedB.sharesGeometry());
+  EXPECT_GT(observer->materializations.load(), 0u);
+  for (auto& receiver : receivers) receiver->close();
+}
+
+TEST(CustomGeometryTile, MemoPolicyDoesNotChangeConversionAndIsCopiedAtSourceCreation) {
+  CustomTileTest test;
+  CustomGeometrySource::Options options;
+  CustomGeometrySource source("any-source-name", options);
+  EXPECT_FALSE(source.impl().getTileOptions()->memoizeGeometry);
+  options.tileOptions.memoizeGeometry = true;
+  options.tileOptions.geometryMemoObserver = std::make_shared<mln::test::GeometryMemoTestObserver>();
+  EXPECT_FALSE(source.impl().getTileOptions()->memoizeGeometry);
+  EXPECT_FALSE(source.impl().getTileOptions()->geometryMemoObserver);
+  CustomGeometrySource another("another-name", options);
+  EXPECT_TRUE(another.impl().getTileOptions()->memoizeGeometry);
+
+  FeatureCollection features;
+  features.emplace_back(mapbox::geometry::polygon<double>{{{-5, -5}, {5, -5}, {5, 5}, {-5, -5}}});
+  const CanonicalTileID id(0, 0, 0);
+  const auto first = CustomGeometryTile::processTileData(features, id, *source.impl().getTileOptions());
+  const auto second = CustomGeometryTile::processTileData(features, id, *another.impl().getTileOptions());
+  EXPECT_EQ(*first, *second);
+  const auto plain = customTileConversionSpec(*source.impl().getTileOptions(), 0);
+  const auto measured = customTileConversionSpec(*another.impl().getTileOptions(), 0);
+  EXPECT_EQ(plain.extent, measured.extent);
+  EXPECT_EQ(plain.buffer, measured.buffer);
+  EXPECT_EQ(plain.tolerance, measured.tolerance);
 }

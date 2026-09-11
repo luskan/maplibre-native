@@ -96,14 +96,16 @@ void CustomGeometryTile::setTileData(const GeoJSON& geoJSON) {
 
 void CustomGeometryTile::setTileData(TileFeatureCollectionPtr featureData) {
     setData(std::make_unique<GeoJSONTileData>(
-        featureData ? std::move(featureData) : std::make_shared<const TileFeatureCollection>()));
+        featureData ? std::move(featureData) : std::make_shared<const TileFeatureCollection>(),
+        options->memoizeGeometry, options->geometryMemoObserver));
 }
 
 void CustomGeometryTile::setTracedTileData(TileFeatureCollectionPtr featureData, tiletrace::Context trace) {
     tiletrace::mark(trace, tiletrace::Delivered);
     tiletrace::bindDemand(trace);
     auto data = std::make_unique<GeoJSONTileData>(
-        featureData ? std::move(featureData) : std::make_shared<const TileFeatureCollection>());
+        featureData ? std::move(featureData) : std::make_shared<const TileFeatureCollection>(),
+        options->memoizeGeometry, options->geometryMemoObserver);
     data->trace = trace;
     setData(std::move(data));
 }

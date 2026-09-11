@@ -16,6 +16,7 @@ class CanonicalTileID;
 template <class T>
 class Actor;
 class ThreadPool;
+class GeometryMemoObserver;
 
 namespace style {
 
@@ -33,6 +34,9 @@ public:
         bool clip = false;
         bool wrap = false;
         tiletrace::ID traceMap = 0, traceSource = 0;
+        // These options affect geometry retention and diagnostics, not conversion output.
+        bool memoizeGeometry = false;
+        std::shared_ptr<GeometryMemoObserver> geometryMemoObserver = nullptr;
     };
 
     struct Options {
