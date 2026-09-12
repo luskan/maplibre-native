@@ -86,6 +86,7 @@ add_library(
     ${PROJECT_SOURCE_DIR}/test/tile/geojson_tile.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/geojson_geometry_memo.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/geometry_tile_data.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/tile/native_geometry_tile_data.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/raster_dem_tile.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/raster_tile.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/tile_cache.test.cpp
