@@ -27,7 +27,7 @@ public:
                        const TileParameters&,
                        Immutable<style::CustomGeometrySource::TileOptions>,
                        ActorRef<style::CustomTileLoader> loader,
-                       TileObserver* observer = nullptr);
+                       TileObserver* observer = nullptr, uint64_t nativeSourceEpoch = 0);
     ~CustomGeometryTile() override;
 
     static TileFeatureCollectionPtr processTileData(const GeoJSON&,
@@ -40,13 +40,21 @@ public:
     void setTileData(const GeoJSON& geoJSON);
     void setTileData(TileFeatureCollectionPtr featureData);
     void setTracedTileData(TileFeatureCollectionPtr, tiletrace::Context);
+    void setNativeTileData(std::shared_ptr<const NativeTilePayload>, NativeRequestTicket, tiletrace::Context);
+    void setNativeTileError(NativeRequestTicket, std::exception_ptr, tiletrace::Context);
     void invalidateTileData();
 
     void setNecessity(TileNecessity) final;
 
     void querySourceFeatures(std::vector<Feature>& result, const SourceQueryOptions&) override;
 
+protected:
+    bool acceptsPendingDataResult() const override;
+
 private:
+    bool acceptsNativeTicket(const NativeRequestTicket&) const;
+    std::shared_ptr<const NativeInputValidity> nativeInputValidity;
+    const uint64_t nativeSourceEpoch;
     tiletrace::Context traceDemand;
     bool stale = true;
     std::string sourceID;

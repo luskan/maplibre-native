@@ -366,6 +366,10 @@ void GeometryTile::onLayout(std::shared_ptr<LayoutResult>&& result, const uint64
         if (result) tiletrace::finish(result->trace, tiletrace::Outcome::Superseded);
         return;
     }
+    if (!acceptsPendingDataResult()) {
+        if (result) tiletrace::finish(result->trace, tiletrace::Outcome::StaleWorker);
+        return;
+    }
 
     if (result) {
         tiletrace::mark(result->trace, tiletrace::Layout);
@@ -427,8 +431,18 @@ void GeometryTile::onError(std::exception_ptr err, const uint64_t resultCorrelat
     if (resultCorrelationID != correlationID) {
         return;
     }
+    if (!acceptsPendingDataResult()) return;
+    applyDataError(std::move(err), tileTraceInput);
+}
 
-    auto failed = tileTraceInput;
+void GeometryTile::setPendingDataError(std::exception_ptr err, tiletrace::Context trace) {
+    if (obsolete) return;
+    // Retire queued results without rebinding the worker's retained data or clearing its layers.
+    ++correlationID;
+    applyDataError(std::move(err), trace);
+}
+
+void GeometryTile::applyDataError(std::exception_ptr err, tiletrace::Context failed) {
     if (failed.id) {
         failed.id = tiletrace::nextID();
         failed.kind = tiletrace::Kind::Layout;

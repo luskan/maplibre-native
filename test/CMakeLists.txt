@@ -87,6 +87,7 @@ add_library(
     ${PROJECT_SOURCE_DIR}/test/tile/geojson_geometry_memo.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/geometry_tile_data.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/native_geometry_tile_data.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/style/native_tile_request.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/raster_dem_tile.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/raster_tile.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/tile_cache.test.cpp
@@ -254,6 +255,11 @@ if(WIN32)
 endif()
 
 set_property(TARGET mbgl-test PROPERTY FOLDER MapLibre)
+
+if (MLN_WITH_EGL)
+    set_property(SOURCE ${PROJECT_SOURCE_DIR}/test/api/custom_geometry_source.test.cpp
+        APPEND PROPERTY COMPILE_DEFINITIONS MLN_TEST_EGL_SWAP=1)
+endif()
 
 if (MLN_WITH_CLANG_TIDY)
     set_target_properties(mbgl-test PROPERTIES CXX_CLANG_TIDY "${CLANG_TIDY_COMMAND}")

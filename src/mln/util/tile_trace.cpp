@@ -534,6 +534,7 @@ void merge(Collector& c, Record& record, const Context& context)
   const auto previous = record.context;
   const auto outcome = previous.outcome;
   record.context = context;
+  if (context.payloadFormat == PayloadFormat::Unknown) record.context.payloadFormat = previous.payloadFormat;
   if (context.kind == Kind::Demand && !context.publication && previous.publication) {
     record.context.publication = previous.publication;
     record.context.generation = previous.generation;
@@ -876,9 +877,10 @@ void configure(bool capture, bool reset)
   c.capture = capture;
 }
 Context create(ID map, ID source, ID consumer, uint8_t z, uint32_t x, uint32_t y,
-               uint8_t overscaledZ, int16_t wrap, uint8_t role, ID view)
+               uint8_t overscaledZ, int16_t wrap, uint8_t role, ID view, PayloadFormat format)
 {
   Context context;
+  context.payloadFormat = format;
   if (!enabled() || !map || !source) return context;
   context.session = session(); context.map = map; context.source = source; context.view = view;
   context.id = context.demand = nextID(); context.consumer = consumer;
@@ -892,6 +894,11 @@ void mark(Context& context, Stage stage) noexcept
   if (!context.time[stage]) context.time[stage] = now();
   if (context.outcome == Outcome::Error) finish(context, Outcome::Error);
   else store(context);
+}
+void markNativeReady(Context& context) noexcept
+{
+  context.payloadFormat = PayloadFormat::NativeGeometry;
+  mark(context, Features);
 }
 void finish(Context& context, Outcome outcome) noexcept
 {
@@ -946,6 +953,7 @@ void bindDemand(const Context& context) noexcept
   record.context.origin = context.origin;
   record.context.fingerprint = context.fingerprint;
   record.context.payloadSession = context.payloadSession;
+  if (context.payloadFormat != PayloadFormat::Unknown) record.context.payloadFormat = context.payloadFormat;
   for (size_t i = Producer; i < StageCount; ++i)
     record.context.time[i] = context.time[i];
   if (context.origin == Origin::Renderer && !context.generation) {
@@ -1712,7 +1720,13 @@ std::string snapshotJSON()
         << ",\"overscaledZ\":" << unsigned(ctx.overscaledZ) << ",\"kind\":" << unsigned(ctx.kind) << ",\"role\":" << unsigned(ctx.role)
         << ",\"origin\":\"" << originName(ctx.origin) << "\",\"outcome\":\"" << outcomeName(ctx.outcome)
         << "\",\"early\":" << (early ? "true" : "false") << ",\"failedSwaps\":" << record.failedSwaps
-        << ",\"symbol\":" << (record.symbol ? "true" : "false") << ",\"timesUs\":[";
+        << ",\"symbol\":" << (record.symbol ? "true" : "false")
+        << ",\"payloadFormat\":\"" << (ctx.payloadFormat == PayloadFormat::NativeGeometry ? "native-geometry" :
+            ctx.payloadFormat == PayloadFormat::LegacyFeatures ? "legacy-features" : "unknown")
+        << "\",\"conversion\":\"" << (!ctx.time[Loader] || !ctx.time[Converted] ? "unavailable" :
+            ctx.payloadFormat == PayloadFormat::NativeGeometry ? "bypassed" :
+            ctx.payloadFormat == PayloadFormat::LegacyFeatures ? "geojson-vt" : "unavailable")
+        << "\",\"timesUs\":[";
     for (size_t i = 0; i < StageCount; ++i) { if (i) out << ','; out << '\"' << ctx.time[i] << '\"'; }
     out << "],\"firstUseComplete\":" << (record.firstUseComplete ? "true" : "false")
         << ",\"firstDrawComplete\":" << ((record.firstUseComplete ||

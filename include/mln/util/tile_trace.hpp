@@ -19,6 +19,7 @@ enum class Outcome : uint8_t
   StaleWorker, StaleSubmit, Overflow, StaleDrain, Error, Teardown, Coalesced, Truncated
 };
 enum class Kind : uint8_t { Demand, Publication, Layout };
+enum class PayloadFormat : uint8_t { Unknown, LegacyFeatures, NativeGeometry };
 enum class Retirement : uint8_t { None, Cancelled, NoDemand, Invalidated, CacheClear, Shutdown };
 
 struct Context
@@ -32,6 +33,7 @@ struct Context
   Origin origin = Origin::Unknown;
   Outcome outcome = Outcome::Pending;
   bool empty = false;
+  PayloadFormat payloadFormat = PayloadFormat::Unknown;
   std::array<uint64_t, StageCount> time{};
 };
 
@@ -45,8 +47,10 @@ ID session() noexcept;
 bool enabled() noexcept;
 void configure(bool capture, bool reset = false);
 Context create(ID map, ID source, ID consumer, uint8_t z, uint32_t x, uint32_t y,
-               uint8_t overscaledZ, int16_t wrap, uint8_t role = 0, ID view = 0);
+               uint8_t overscaledZ, int16_t wrap, uint8_t role = 0, ID view = 0,
+               PayloadFormat format = PayloadFormat::Unknown);
 void mark(Context&, Stage) noexcept;
+void markNativeReady(Context&) noexcept;
 void finish(Context&, Outcome) noexcept;
 void bindDemand(const Context&) noexcept;
 void retireSource(ID source) noexcept;

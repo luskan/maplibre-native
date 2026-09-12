@@ -1,10 +1,15 @@
 #include <mln/style/custom_tile_loader.hpp>
 #include <mln/style/custom_tile_loader_cache.hpp>
 #include <mln/tile/custom_geometry_tile.hpp>
+#include <mln/style/native_tile_request_state.hpp>
 #include <mln/util/tile_range.hpp>
+#include <mln/util/scoped.hpp>
+#include <mln/util/logging.hpp>
 
 #include <algorithm>
 #include <atomic>
+#include <stdexcept>
+#include <utility>
 
 namespace mln {
 namespace style {
@@ -80,10 +85,36 @@ CustomTileLoaderDataCacheStats getCustomTileLoaderDataCacheStats() {
 CustomTileLoader::CustomTileLoader(const TileFunction& fetchTileFn,
                                    const TileFunction& cancelTileFn,
                                    const CustomGeometrySource::TileOptions& tileOptions_,
-    std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch_)
-    : tracedFetch(std::move(tracedFetch_)), tileOptions(tileOptions_) {
+    std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch_,
+    NativeTileCallbacks nativeCallbacks_, std::shared_ptr<NativeRequestState> nativeState_)
+    : tracedFetch(std::move(tracedFetch_)), tileOptions(tileOptions_),
+      nativeCallbacks(std::move(nativeCallbacks_)), nativeState(std::move(nativeState_)) {
     fetchTileFunction = fetchTileFn;
     cancelTileFunction = cancelTileFn;
+    if (tileOptions.dataType == CustomGeometrySource::TileDataType::NativeGeometry) {
+        if (!nativeCallbacks.resolve || !nativeCallbacks.fetch || !nativeCallbacks.cancel)
+            throw std::invalid_argument("Native loader requires resolve, fetch and cancel callbacks");
+        if (!nativeState) nativeState = std::make_shared<NativeRequestState>(tileOptions);
+        if (nativeState->contract() != nativeTileConversionContract(tileOptions))
+            throw std::invalid_argument("Native loader conversion contract does not match its source");
+    } else if (tileOptions.dataType != CustomGeometrySource::TileDataType::LegacyFeatures || nativeState) {
+        throw std::invalid_argument("Invalid custom tile data type");
+    }
+}
+
+CustomTileLoader::~CustomTileLoader() {
+    if (nativeState) { nativeState->retire(); clearCachedTiles(dataCache); }
+}
+
+uint64_t CustomTileLoader::nativeSourceEpoch() const noexcept {
+    return nativeState ? nativeState->sourceEpoch() : 0;
+}
+
+bool CustomTileLoader::accepts(const CanonicalTileID& tile, const NativeRequestTicket& ticket) const {
+    if (!nativeState || !ticket.isCurrent() || ticket.sourceEpoch() != nativeState->sourceEpoch()
+        || ticket.tileID() != tile) return false;
+    const auto found = tileCallbackMap.find(tile);
+    return found != tileCallbackMap.end() && found->second.nativeTicket == ticket;
 }
 
 void CustomTileLoader::fetchTracedTile(const OverscaledTileID& id,
@@ -96,14 +127,68 @@ void CustomTileLoader::fetchTracedTile(const OverscaledTileID& id,
 void CustomTileLoader::fetchTile(const OverscaledTileID& tileID,
                                 const ActorRef<CustomGeometryTile>& tileRef,
                                 RegistrationToken token) {
-    std::scoped_lock guard(dataMutex);
+    std::vector<NativeCancellation> cancellations;
+    Scoped notify([&] { notifyNativeCancellations(cancellations); });
+    NativeRequestResolution resolution;
+    if (nativeState) resolution = nativeState->resolve(tileID.canonical, nativeCallbacks.resolve);
+    NativeRequestTicket previousTicket;
+    std::unique_lock guard(dataMutex);
+    auto& entry = tileCallbackMap[tileID.canonical];
+    if (nativeState && resolution.ticket && entry.nativeTicket != resolution.ticket) {
+        previousTicket = entry.nativeTicket;
+        for (const auto& previous : entry.registrations) {
+            if (previous.token != token) previous.tileRef.invoke(&CustomGeometryTile::invalidateTileData);
+        }
+        if (entry.producerWanted)
+            invokeTileCancel(tileID.canonical, cancellations, tiletrace::Retirement::Invalidated, previousTicket);
+        entry.producerWanted = false;
+        entry.registrations.clear();
+        eraseCachedTile(dataCache, tileID.canonical);
+        entry.nativeTicket = resolution.ticket;
+        entry.nativePublication.reset();
+    }
+    incomingDemand.payloadFormat = nativeState ? tiletrace::PayloadFormat::NativeGeometry
+                                               : tiletrace::PayloadFormat::LegacyFeatures;
+    auto registration = std::find_if(entry.registrations.begin(), entry.registrations.end(),
+        [token](const TileRegistration& candidate) { return candidate.token == token; });
+    if (registration == entry.registrations.end()) {
+        entry.registrations.push_back(
+            TileRegistration{tileID.overscaledZ, tileID.wrap, token, tileRef, true, incomingDemand});
+        const auto sameTileId = std::count_if(entry.registrations.begin(), entry.registrations.end(),
+            [&tileID](const TileRegistration& candidate) {
+                return candidate.overscaledZ == tileID.overscaledZ && candidate.wrap == tileID.wrap;
+            });
+        const auto depth = static_cast<uint64_t>(sameTileId);
+        auto known = g_maxSharedTileIdDepth.load(std::memory_order_relaxed);
+        while (depth > known && !g_maxSharedTileIdDepth.compare_exchange_weak(known, depth)) {}
+    } else {
+        registration->tileRef = tileRef;
+        registration->wantsData = true;
+        registration->trace = incomingDemand;
+    }
+    if (nativeState && !resolution.ticket.isCurrent()) {
+        tiletrace::finish(incomingDemand, tiletrace::Outcome::StaleFast);
+        tileRef.invoke(&CustomGeometryTile::invalidateTileData);
+        return;
+    }
+    if (resolution.error) {
+        guard.unlock();
+        notifyNativeCancellations(cancellations);
+        setNativeTileError(tileID.canonical, resolution.ticket, resolution.error, incomingDemand);
+        return;
+    }
+
     const bool cacheEnabled = isCustomTileLoaderDataCacheEnabled();
-    auto cachedTileData = cacheEnabled ? dataCache.find(tileID.canonical) : dataCache.end();
-    if (cachedTileData != dataCache.end()) {
+    auto cached = cacheEnabled ? dataCache.find(tileID.canonical) : dataCache.end();
+    if (nativeState && cached != dataCache.end() && cached->second.nativeTicket != resolution.ticket) {
+        eraseCachedTile(dataCache, tileID.canonical);
+        cached = dataCache.end();
+    }
+    if (cached != dataCache.end()) {
         g_dataCacheHits.fetch_add(1, std::memory_order_relaxed);
-        if (incomingDemand.id && !cachedTileData->second.trace.publication)
-            cachedTileData->second.trace.publication = tiletrace::nextID();
-        auto trace = cachedTileData->second.trace;
+        if (incomingDemand.id && !cached->second.trace.publication)
+            cached->second.trace.publication = tiletrace::nextID();
+        auto trace = cached->second.trace;
         trace.kind = tiletrace::Kind::Publication;
         trace.id = incomingDemand.id ? tiletrace::nextID() : 0;
         trace.session = incomingDemand.session;
@@ -121,51 +206,51 @@ void CustomTileLoader::fetchTile(const OverscaledTileID& tileID,
         trace.origin = tiletrace::Origin::Processed;
         trace.time = {};
         trace.time[tiletrace::Request] = incomingDemand.time[tiletrace::Request];
-        tileRef.invoke(&CustomGeometryTile::setTracedTileData, cachedTileData->second.features, trace);
-    } else if (!cacheEnabled) {
-        g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    auto& entry = tileCallbackMap[tileID.canonical];
-    auto registration = std::find_if(entry.registrations.begin(),
-                                     entry.registrations.end(),
-                                     [token](const TileRegistration& candidate) {
-                                         return candidate.token == token;
-                                     });
-    if (registration == entry.registrations.end()) {
-        entry.registrations.push_back(
-            TileRegistration{tileID.overscaledZ, tileID.wrap, token, tileRef, true, incomingDemand});
-        // Count how deep one tile ID gets shared. More than one receiver for the
-        // same zoom and wrap means a tile was replaced before its twin went away.
-        const auto sameTileId = std::count_if(entry.registrations.begin(),
-                                              entry.registrations.end(),
-                                              [&tileID](const TileRegistration& candidate) {
-                                                  return candidate.overscaledZ == tileID.overscaledZ &&
-                                                         candidate.wrap == tileID.wrap;
-                                              });
-        auto depth = static_cast<uint64_t>(sameTileId);
-        auto known = g_maxSharedTileIdDepth.load(std::memory_order_relaxed);
-        while (depth > known && !g_maxSharedTileIdDepth.compare_exchange_weak(known, depth)) {
-        }
-    } else {
-        registration->tileRef = tileRef;
-        registration->wantsData = true;
-        registration->trace = incomingDemand;
-    }
-
-    if (cachedTileData != dataCache.end()) {
+        if (nativeState)
+            tileRef.invoke(&CustomGeometryTile::setNativeTileData, std::get<NativeTilePayloadPtr>(cached->second.payload),
+                           resolution.ticket, trace);
+        else
+            tileRef.invoke(&CustomGeometryTile::setTracedTileData,
+                           std::get<TileFeatureCollectionPtr>(cached->second.payload), trace);
         return;
     }
-    // Always ask the producer on a miss. Suppressing the call would mean trusting
-    // an earlier fetch that may already have been cancelled or dropped, and the
-    // producer is the only side that knows whether work is still queued.
+    if (!cacheEnabled) g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
+    // A previous request may have been dropped, so each miss still reaches the producer.
     entry.producerWanted = true;
-    g_fetchesIssued.fetch_add(1, std::memory_order_relaxed);
-    if (tracedFetch) tracedFetch(tileID.canonical, incomingDemand);
-    else invokeTileFetch(tileID.canonical);
+    if (nativeState) {
+        const auto ticket = entry.nativeTicket;
+        const auto trace = incomingDemand;
+        guard.unlock();
+        notifyNativeCancellations(cancellations);
+        bool stillWanted = false;
+        {
+            std::lock_guard currentGuard(dataMutex);
+            const auto current = tileCallbackMap.find(tileID.canonical);
+            if (accepts(tileID.canonical, ticket) && current->second.producerWanted) {
+                stillWanted = std::any_of(current->second.registrations.begin(), current->second.registrations.end(),
+                    [token](const TileRegistration& receiver) { return receiver.token == token && receiver.wantsData; });
+            }
+        }
+        if (!stillWanted) {
+            auto stale = trace;
+            const bool current = ticket.isCurrent();
+            tiletrace::finish(stale, current ? tiletrace::Outcome::Cancelled : tiletrace::Outcome::StaleFast);
+            if (!current) tileRef.invoke(&CustomGeometryTile::invalidateTileData);
+            return;
+        }
+        g_fetchesIssued.fetch_add(1, std::memory_order_relaxed);
+        try { nativeCallbacks.fetch(tileID.canonical, ticket, trace); }
+        catch (...) { setNativeTileError(tileID.canonical, ticket, std::current_exception(), trace); }
+    } else {
+        g_fetchesIssued.fetch_add(1, std::memory_order_relaxed);
+        if (tracedFetch) tracedFetch(tileID.canonical, incomingDemand);
+        else invokeTileFetch(tileID.canonical);
+    }
 }
 
 void CustomTileLoader::cancelTile(const OverscaledTileID& tileID, RegistrationToken token) {
+    std::vector<NativeCancellation> cancellations;
+    Scoped notify([&] { notifyNativeCancellations(cancellations); });
     std::scoped_lock guard(dataMutex);
     auto entry = tileCallbackMap.find(tileID.canonical);
     if (entry == tileCallbackMap.end()) return;
@@ -180,13 +265,17 @@ void CustomTileLoader::cancelTile(const OverscaledTileID& tileID, RegistrationTo
     }
     // Keep the registration, the tile can become required again.
     registration->wantsData = false;
-    releaseProducerIfUnwanted(tileID.canonical, entry->second);
+    releaseProducerIfUnwanted(tileID.canonical, entry->second, cancellations);
 }
 
 void CustomTileLoader::removeTile(const OverscaledTileID& tileID, RegistrationToken token) {
+    std::vector<NativeCancellation> cancellations;
+    Scoped notify([&] { notifyNativeCancellations(cancellations); });
+    NativeRequestTicket released;
     std::scoped_lock guard(dataMutex);
     auto entry = tileCallbackMap.find(tileID.canonical);
     if (entry == tileCallbackMap.end()) return;
+    released = entry->second.nativeTicket;
     auto registration = std::find_if(entry->second.registrations.begin(),
                                      entry->second.registrations.end(),
                                      [token](const TileRegistration& candidate) {
@@ -200,11 +289,12 @@ void CustomTileLoader::removeTile(const OverscaledTileID& tileID, RegistrationTo
         return;
     }
     entry->second.registrations.erase(registration);
-    releaseProducerIfUnwanted(tileID.canonical, entry->second);
+    releaseProducerIfUnwanted(tileID.canonical, entry->second, cancellations);
     dropEntryIfEmpty(tileID.canonical);
 }
 
-void CustomTileLoader::releaseProducerIfUnwanted(const CanonicalTileID& tileID, CanonicalEntry& entry) {
+void CustomTileLoader::releaseProducerIfUnwanted(const CanonicalTileID& tileID, CanonicalEntry& entry,
+                                               std::vector<NativeCancellation>& cancellations) {
     const bool stillWanted = std::any_of(entry.registrations.begin(),
                                          entry.registrations.end(),
                                          [](const TileRegistration& candidate) {
@@ -220,7 +310,7 @@ void CustomTileLoader::releaseProducerIfUnwanted(const CanonicalTileID& tileID, 
         return;
     }
     entry.producerWanted = false;
-    invokeTileCancel(tileID);
+    invokeTileCancel(tileID, cancellations);
 }
 
 void CustomTileLoader::dropEntryIfEmpty(const CanonicalTileID& tileID) {
@@ -233,6 +323,7 @@ void CustomTileLoader::dropEntryIfEmpty(const CanonicalTileID& tileID) {
 }
 
 void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON& data) {
+    if (nativeState) return;
     bool hasActiveCallbacks = false;
     {
         std::lock_guard<std::mutex> guard(dataMutex);
@@ -248,30 +339,7 @@ void CustomTileLoader::setTileData(const CanonicalTileID& tileID, const GeoJSON&
     }
 
     auto featureData = CustomGeometryTile::processTileData(data, tileID, tileOptions);
-    std::vector<ActorRef<CustomGeometryTile>> callbacks;
-    {
-        std::lock_guard<std::mutex> guard(dataMutex);
-        const auto iter = tileCallbackMap.find(tileID);
-        if (iter != tileCallbackMap.end()) {
-            for (const auto& registration : iter->second.registrations) {
-                callbacks.push_back(registration.tileRef);
-            }
-        }
-        if (isCustomTileLoaderDataCacheEnabled() && !callbacks.empty()) {
-            const bool inserted = dataCache.find(tileID) == dataCache.end();
-            dataCache[tileID] = featureData;
-            if (inserted) {
-                g_dataCacheTileCount.fetch_add(1, std::memory_order_relaxed);
-            }
-            g_dataCacheStores.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            eraseCachedTile(dataCache, tileID);
-            g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-    for (const auto& tileRef : callbacks) {
-        tileRef.invoke(kSetProcessedTileData, featureData);
-    }
+    publish(tileID, featureData, {}, {}, false);
 }
 
 void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::shared_ptr<const FeatureCollection> data) {
@@ -280,6 +348,8 @@ void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::share
 
 void CustomTileLoader::setTracedTileFeatures(const CanonicalTileID& tileID,
     std::shared_ptr<const FeatureCollection> data, tiletrace::Context trace) {
+    if (nativeState) { tiletrace::finish(trace, tiletrace::Outcome::StaleDrain); return; }
+    trace.payloadFormat = tiletrace::PayloadFormat::LegacyFeatures;
     tiletrace::mark(trace, tiletrace::Loader);
     bool hasActiveCallbacks = false;
     {
@@ -306,59 +376,148 @@ void CustomTileLoader::setTracedTileFeatures(const CanonicalTileID& tileID,
     }
     tiletrace::mark(trace, tiletrace::Converted);
     trace.empty = featureData->empty();
+    publish(tileID, featureData, trace);
+}
+
+void CustomTileLoader::setTracedTilePayload(const CanonicalTileID& tileID, NativeRequestTicket ticket,
+                                          NativeTilePayloadPtr payload, tiletrace::Context trace) {
+    trace.payloadFormat = tiletrace::PayloadFormat::NativeGeometry;
+    tiletrace::mark(trace, tiletrace::Loader);
+    {
+        std::lock_guard guard(dataMutex);
+        if (!accepts(tileID, ticket)) {
+            tiletrace::finish(trace, tiletrace::Outcome::StaleDrain);
+            return;
+        }
+    }
+    if (!payload || ticket.binding().key.empty() || payload->metadata().tileID != tileID
+        || payload->metadata().conversion != nativeState->contract()) {
+        setNativeTileError(tileID, ticket,
+                          std::make_exception_ptr(std::invalid_argument("Native tile payload does not match its request")),
+                          trace);
+        return;
+    }
+    tiletrace::mark(trace, tiletrace::Converted);
+    trace.empty = payload->features().empty();
+    publish(tileID, std::move(payload), trace, std::move(ticket));
+}
+
+void CustomTileLoader::setNativeTileError(const CanonicalTileID& tileID, NativeRequestTicket ticket,
+                                        std::exception_ptr error, tiletrace::Context trace) {
+    trace.payloadFormat = tiletrace::PayloadFormat::NativeGeometry;
     std::vector<TileRegistration> callbacks;
+    bool published = false;
+    {
+        std::lock_guard guard(dataMutex);
+        if (!accepts(tileID, ticket)) {
+            tiletrace::finish(trace, tiletrace::Outcome::StaleDrain);
+            return;
+        }
+        const auto& entry = tileCallbackMap.find(tileID)->second;
+        callbacks = entry.registrations;
+        published = entry.nativePublication
+            && (*entry.nativePublication == trace.publication || trace.kind == tiletrace::Kind::Demand);
+        const auto cached = dataCache.find(tileID);
+        if (cached != dataCache.end() && cached->second.nativeTicket != ticket) eraseCachedTile(dataCache, tileID);
+    }
+    if (!error) error = std::make_exception_ptr(std::runtime_error("Native tile request failed"));
+    if (!published) tiletrace::finish(trace, callbacks.empty() ? tiletrace::Outcome::NoReceiver : tiletrace::Outcome::Error);
+    else {
+        trace.publication = trace.demand = trace.generation = trace.payloadSession = 0;
+        trace.time = {};
+        trace.origin = tiletrace::Origin::Unknown;
+    }
+    for (const auto& receiver : callbacks) {
+        auto delivery = deliveryTrace(tileID, trace, receiver);
+        delivery.kind = tiletrace::Kind::Publication;
+        receiver.tileRef.invoke(&CustomGeometryTile::setNativeTileError, ticket, error, delivery);
+    }
+}
+
+tiletrace::Context CustomTileLoader::deliveryTrace(const CanonicalTileID& tileID, const tiletrace::Context& trace,
+                                                 const TileRegistration& receiver) {
+    auto delivery = trace;
+    delivery.id = receiver.trace.id ? tiletrace::nextID() : 0;
+    if (delivery.session != receiver.trace.session) {
+        delivery.session = receiver.trace.session;
+        delivery.time = {};
+        delivery.origin = tiletrace::Origin::Unknown;
+    }
+    delivery.map = receiver.trace.map;
+    delivery.source = receiver.trace.source;
+    delivery.demand = receiver.trace.demand;
+    delivery.role = receiver.trace.role;
+    delivery.view = receiver.trace.view;
+    delivery.consumer = receiver.token;
+    delivery.overscaledZ = receiver.overscaledZ;
+    delivery.wrap = receiver.wrap;
+    delivery.z = tileID.z;
+    delivery.x = tileID.x;
+    delivery.y = tileID.y;
+    delivery.time[tiletrace::Request] = receiver.trace.time[tiletrace::Request];
+    return delivery;
+}
+
+void CustomTileLoader::publish(const CanonicalTileID& tileID, ProcessedTilePayload payload,
+                              tiletrace::Context trace, NativeRequestTicket ticket, bool traced) {
+    trace.payloadFormat = nativeState ? tiletrace::PayloadFormat::NativeGeometry : tiletrace::PayloadFormat::LegacyFeatures;
+    std::vector<TileRegistration> callbacks;
+    CachedData replaced;
     bool cached = false;
     uint64_t cacheTime = 0;
     {
-        std::lock_guard<std::mutex> guard(dataMutex);
-        const auto iter = tileCallbackMap.find(tileID);
-        if (iter != tileCallbackMap.end()) {
-            for (const auto& registration : iter->second.registrations) {
-                callbacks.push_back(registration);
-            }
+        std::lock_guard guard(dataMutex);
+        if (nativeState && !accepts(tileID, ticket)) {
+            tiletrace::finish(trace, tiletrace::Outcome::StaleDrain);
+            return;
         }
+        const auto entry = tileCallbackMap.find(tileID);
+        if (entry != tileCallbackMap.end()) callbacks = entry->second.registrations;
+        const auto old = dataCache.find(tileID);
+        if (old != dataCache.end()) replaced = std::move(old->second);
         if (isCustomTileLoaderDataCacheEnabled() && !callbacks.empty()) {
-            const bool inserted = dataCache.find(tileID) == dataCache.end();
-            dataCache[tileID] = featureData;
-            dataCache[tileID].trace = trace;
+            const bool inserted = old == dataCache.end();
+            auto& stored = dataCache[tileID];
+            stored.payload = payload;
+            stored.trace = trace;
+            stored.nativeTicket = ticket;
             cached = true;
-            if (inserted) {
-                g_dataCacheTileCount.fetch_add(1, std::memory_order_relaxed);
-            }
+            if (inserted) g_dataCacheTileCount.fetch_add(1, std::memory_order_relaxed);
             g_dataCacheStores.fetch_add(1, std::memory_order_relaxed);
         } else {
             eraseCachedTile(dataCache, tileID);
             g_dataCacheBypasses.fetch_add(1, std::memory_order_relaxed);
         }
-        cacheTime = tiletrace::now();
+        if (nativeState && !callbacks.empty()) entry->second.nativePublication = trace.publication;
+        if (traced) cacheTime = tiletrace::now();
     }
-    if (!callbacks.empty()) tiletrace::batchCacheAdmission(trace, cached, cacheTime);
+    if (traced && !callbacks.empty()) tiletrace::batchCacheAdmission(trace, cached, cacheTime);
     if (callbacks.empty()) tiletrace::finish(trace, tiletrace::Outcome::NoReceiver);
     for (const auto& receiver : callbacks) {
-        auto delivery = trace;
-        delivery.id = receiver.trace.id ? tiletrace::nextID() : 0;
-        if (delivery.session != receiver.trace.session) {
-            delivery.session = receiver.trace.session;
-            delivery.time = {};
-            delivery.origin = tiletrace::Origin::Unknown;
+        if (!traced) {
+            receiver.tileRef.invoke(kSetProcessedTileData, std::get<TileFeatureCollectionPtr>(payload));
+            continue;
         }
-        delivery.demand = receiver.trace.demand;
-        delivery.role = receiver.trace.role;
-        delivery.view = receiver.trace.view;
-        delivery.consumer = receiver.token;
-        delivery.overscaledZ = receiver.overscaledZ;
-        delivery.wrap = receiver.wrap;
-        delivery.time[tiletrace::Request] = receiver.trace.time[tiletrace::Request];
-        receiver.tileRef.invoke(&CustomGeometryTile::setTracedTileData, featureData, delivery);
+        auto delivery = deliveryTrace(tileID, trace, receiver);
+        if (nativeState)
+            receiver.tileRef.invoke(&CustomGeometryTile::setNativeTileData,
+                                   std::get<NativeTilePayloadPtr>(payload), ticket, delivery);
+        else receiver.tileRef.invoke(&CustomGeometryTile::setTracedTileData,
+                                     std::get<TileFeatureCollectionPtr>(payload), delivery);
     }
 }
 
 void CustomTileLoader::invalidateTile(const CanonicalTileID& tileID) {
+    std::vector<NativeCancellation> cancellations;
+    Scoped notify([&] { notifyNativeCancellations(cancellations); });
+    if (nativeState) nativeState->invalidate(tileID);
+    NativeRequestTicket released;
     std::scoped_lock guard(dataMutex);
     auto tileCallbacks = tileCallbackMap.find(tileID);
     if (tileCallbacks == tileCallbackMap.end()) {
         return;
     }
+    released = tileCallbacks->second.nativeTicket;
     for (auto& registration : tileCallbacks->second.registrations) {
         registration.tileRef.invoke(&CustomGeometryTile::invalidateTileData);
     }
@@ -367,11 +526,15 @@ void CustomTileLoader::invalidateTile(const CanonicalTileID& tileID) {
     eraseCachedTile(dataCache, tileID);
     // One cancel for the canonical tile, the receivers shared a single fetch.
     if (wasWanted) {
-        invokeTileCancel(tileID, tiletrace::Retirement::Invalidated);
+        invokeTileCancel(tileID, cancellations, tiletrace::Retirement::Invalidated, released);
     }
 }
 
 void CustomTileLoader::invalidateRegion(const LatLngBounds& bounds, Range<uint8_t>) {
+    std::vector<NativeCancellation> cancellations;
+    Scoped notify([&] { notifyNativeCancellations(cancellations); });
+    if (nativeState) nativeState->invalidateRegion(bounds);
+    std::vector<NativeRequestTicket> released;
     std::scoped_lock guard(dataMutex);
     std::map<uint8_t, util::TileRange> tileRanges;
     // Entries left without receivers, erased below so the map does not keep every
@@ -384,6 +547,7 @@ void CustomTileLoader::invalidateRegion(const LatLngBounds& bounds, Range<uint8_
             tileRange = tileRanges.emplace(std::make_pair(zoom, util::TileRange::fromLatLngBounds(bounds, zoom))).first;
         }
         if (tileRange->second.contains(idtuple.first)) {
+            if (nativeState) released.push_back(idtuple.second.nativeTicket);
             for (auto& registration : idtuple.second.registrations) {
                 registration.tileRef.invoke(&CustomGeometryTile::invalidateTileData);
             }
@@ -393,7 +557,8 @@ void CustomTileLoader::invalidateRegion(const LatLngBounds& bounds, Range<uint8_
             // One cancel for the canonical tile, the receivers shared a single fetch.
             if (idtuple.second.producerWanted) {
                 idtuple.second.producerWanted = false;
-                invokeTileCancel(idtuple.first, tiletrace::Retirement::Invalidated);
+                invokeTileCancel(idtuple.first, cancellations, tiletrace::Retirement::Invalidated,
+                                 idtuple.second.nativeTicket);
             }
             idtuple.second.registrations.clear();
             emptied.push_back(idtuple.first);
@@ -405,14 +570,19 @@ void CustomTileLoader::invalidateRegion(const LatLngBounds& bounds, Range<uint8_
 }
 
 void CustomTileLoader::clearDataCache() {
+    std::vector<NativeCancellation> cancellations;
+    Scoped notify([&] { notifyNativeCancellations(cancellations); });
+    if (nativeState) nativeState->clear();
+    std::vector<NativeRequestTicket> released;
     std::lock_guard<std::mutex> guard(dataMutex);
     for (auto& idtuple : tileCallbackMap) {
+        if (nativeState) released.push_back(idtuple.second.nativeTicket);
         for (auto& registration : idtuple.second.registrations) {
             registration.tileRef.invoke(&CustomGeometryTile::invalidateTileData);
         }
         if (idtuple.second.producerWanted) {
             idtuple.second.producerWanted = false;
-            invokeTileCancel(idtuple.first, tiletrace::Retirement::CacheClear);
+            invokeTileCancel(idtuple.first, cancellations, tiletrace::Retirement::CacheClear, idtuple.second.nativeTicket);
         }
     }
     tileCallbackMap.clear();
@@ -425,11 +595,27 @@ void CustomTileLoader::invokeTileFetch(const CanonicalTileID& tileID) {
     }
 }
 
-void CustomTileLoader::invokeTileCancel(const CanonicalTileID& tileID, tiletrace::Retirement reason) {
+void CustomTileLoader::invokeTileCancel(const CanonicalTileID& tileID, std::vector<NativeCancellation>& cancellations,
+                                      tiletrace::Retirement reason,
+                                      NativeRequestTicket ticket) {
     tiletrace::retireBatchTile(tileOptions.traceMap, tileOptions.traceSource,
                              tileID.z, tileID.x, tileID.y, reason);
-    if (cancelTileFunction != nullptr) {
+    if (nativeState) {
+        if (!ticket) {
+            const auto found = tileCallbackMap.find(tileID);
+            if (found != tileCallbackMap.end()) ticket = found->second.nativeTicket;
+        }
+        if (ticket) cancellations.push_back({tileID, std::move(ticket)});
+    } else if (cancelTileFunction != nullptr) {
         cancelTileFunction(tileID);
+    }
+}
+
+void CustomTileLoader::notifyNativeCancellations(std::vector<NativeCancellation>& cancellations) noexcept {
+    const auto pending = std::exchange(cancellations, {});
+    for (const auto& cancellation : pending) {
+        try { nativeCallbacks.cancel(cancellation.tile, cancellation.ticket); }
+        catch (...) { Log::Error(Event::General, "Native tile cancellation callback threw an exception"); }
     }
 }
 

@@ -51,7 +51,8 @@ void RenderCustomGeometrySource::update(Immutable<style::Source::Impl> baseImpl_
                        {},
                        [&](const OverscaledTileID& tileID, TileObserver* observer_) {
                            return std::make_unique<CustomGeometryTile>(
-                               tileID, impl().id, parameters, impl().getTileOptions(), *tileLoader, observer_);
+                               tileID, impl().id, parameters, impl().getTileOptions(), *tileLoader, observer_,
+                               impl().getNativeSourceEpoch());
                        });
 }
 

@@ -320,6 +320,7 @@ list(APPEND INCLUDE_FILES
     ${PROJECT_SOURCE_DIR}/include/mln/style/conversion/tileset.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/style/conversion/transition_options.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/style/custom_tile_conversion.hpp
+    ${PROJECT_SOURCE_DIR}/include/mln/style/native_tile_request.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/style/expression/assertion.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/style/expression/at.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/style/expression/boolean_operator.hpp
@@ -906,6 +907,8 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_worker.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/geometry_tile_worker.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_payload.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/style/native_tile_request_state.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/style/native_tile_request_state.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_payload.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/native_geometry_tile_data.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/native_geometry_tile_data.cpp

@@ -23,6 +23,10 @@
 #include <mln/tile/geojson_tile_data.hpp>
 #include <mln/style/sources/custom_geometry_source_impl.hpp>
 #include <mln/style/custom_tile_conversion.hpp>
+#include <mln/style/native_tile_request_state.hpp>
+#include <mln/tile/native_geometry_tile_data.hpp>
+#include <mln/util/rapidjson.hpp>
+#include <mln/util/scoped.hpp>
 #include <mln/annotation/annotation_manager.hpp>
 #include <mln/renderer/image_manager.hpp>
 #include <mln/renderer/image_manager_observer.hpp>
@@ -817,4 +821,721 @@ TEST(CustomGeometryTile, MemoPolicyDoesNotChangeConversionAndIsCopiedAtSourceCre
   EXPECT_EQ(plain.extent, measured.extent);
   EXPECT_EQ(plain.buffer, measured.buffer);
   EXPECT_EQ(plain.tolerance, measured.tolerance);
+}
+
+namespace {
+
+CustomGeometrySource::TileOptions nativeOptions()
+{
+  CustomGeometrySource::TileOptions options;
+  options.dataType = CustomGeometrySource::TileDataType::NativeGeometry;
+  return options;
+}
+
+class InspectableCustomTile : public CustomGeometryTile
+{
+public:
+  using CustomGeometryTile::CustomGeometryTile;
+  const GeometryTileData* data() const { return getData(); }
+  bool acceptsResult() const { return acceptsPendingDataResult(); }
+};
+
+class NativeTileTest : public CustomTileTest
+{
+public:
+  const bool cacheWasEnabled = isCustomTileLoaderDataCacheEnabled();
+  CustomGeometrySource::TileOptions options = nativeOptions();
+  std::shared_ptr<NativeRequestState> state = std::make_shared<NativeRequestState>(options);
+  std::string key = "first-key";
+  std::shared_ptr<const int> inputs = std::make_shared<const int>(1);
+  std::vector<NativeRequestTicket> requests;
+  std::vector<NativeRequestTicket> cancellations;
+  std::function<NativeRequestBinding(const CanonicalTileID&)> resolver;
+  std::function<void(const CanonicalTileID&, const NativeRequestTicket&)> cancellationAction;
+  NativeTileCallbacks callbacks{
+    [&](const CanonicalTileID& tile) {
+      return resolver ? resolver(tile) : NativeRequestBinding{key, inputs};
+    },
+    [&](const CanonicalTileID&, const NativeRequestTicket& ticket, tiletrace::Context) { requests.push_back(ticket); },
+    [&](const CanonicalTileID& tile, const NativeRequestTicket& ticket) {
+      cancellations.push_back(ticket);
+      if (cancellationAction) cancellationAction(tile, ticket);
+    }};
+  CustomTileLoader loader{nullptr, nullptr, options, {}, callbacks, state};
+  std::shared_ptr<Mailbox> loaderMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+  ActorRef<CustomTileLoader> loaderActor{loader, loaderMailbox};
+
+  struct Receiver
+  {
+    StubTileObserver observer;
+    std::unique_ptr<InspectableCustomTile> tile;
+    std::shared_ptr<Mailbox> mailbox;
+    ActorRef<CustomGeometryTile> actor;
+    const CustomTileRegistrationToken token = nextCustomTileRegistrationToken();
+    explicit Receiver(NativeTileTest& test, const OverscaledTileID& id)
+      : tile(std::make_unique<InspectableCustomTile>(id, "source", test.tileParameters,
+             makeMutable<CustomGeometrySource::TileOptions>(test.options), test.loaderActor,
+             &observer, test.loader.nativeSourceEpoch())),
+        mailbox(std::make_shared<Mailbox>(*Scheduler::GetCurrent())), actor(*tile, mailbox)
+    {
+      CircleLayer layer("circle", "source");
+      tile->setLayers({makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(layer.baseImpl))});
+    }
+    ~Receiver() { observer.tileChanged = {}; observer.tileError = {}; mailbox->close(); }
+  };
+
+  NativeTileTest() { setCustomTileLoaderDataCacheEnabled(true); }
+  ~NativeTileTest() { loaderMailbox->close(); setCustomTileLoaderDataCacheEnabled(cacheWasEnabled); }
+
+  void fetch(Receiver& receiver)
+  {
+    loader.fetchTile(receiver.tile->id, receiver.actor, receiver.token);
+  }
+
+  NativeTilePayloadPtr payload(const CanonicalTileID& tile, const std::string& name = "native")
+  {
+    NativeTileBuilder builder({tile, state->contract()});
+    builder.appendFinal(FeatureType::Point, {{{4096, 4096}}}, {{"name", name}}, uint64_t{7});
+    return std::move(builder).seal();
+  }
+
+  void publish(const CanonicalTileID& tile, const NativeRequestTicket& ticket, NativeTilePayloadPtr value)
+  {
+    loader.setTracedTilePayload(tile, ticket, std::move(value), {});
+  }
+};
+
+std::shared_ptr<GeometryTile::LayoutResult> emptyLayout()
+{
+  return std::make_shared<GeometryTile::LayoutResult>(mln::unordered_map<std::string, LayerRenderData>{},
+      nullptr, gfx::GlyphAtlas{}, gfx::ImageAtlas{}, nullptr);
+}
+
+} // namespace
+
+TEST(CustomGeometryTile, NativeCacheSharesPayloadAcrossWrappedAndOverscaledReceivers)
+{
+  NativeTileTest test;
+  const CanonicalTileID canonical(0, 0, 0);
+  NativeTileTest::Receiver first(test, OverscaledTileID(0, 0, canonical));
+  NativeTileTest::Receiver wrapped(test, OverscaledTileID(0, 1, canonical));
+  NativeTileTest::Receiver overzoomed(test, OverscaledTileID(2, 0, canonical));
+  test.fetch(first);
+  test.fetch(wrapped);
+  ASSERT_EQ(2u, test.requests.size());
+  EXPECT_EQ(test.requests[0], test.requests[1]);
+  auto payload = test.payload(canonical);
+  const auto before = getCustomTileLoaderDataCacheStats();
+  test.publish(canonical, test.requests[0], payload);
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete() && wrapped.tile->isComplete(); }));
+  EXPECT_EQ(before.stores + 1, getCustomTileLoaderDataCacheStats().stores);
+  test.fetch(overzoomed);
+  ASSERT_TRUE(test.waitUntil([&] { return overzoomed.tile->isComplete(); }));
+  EXPECT_EQ(2u, test.requests.size());
+  EXPECT_EQ(before.hits + 1, getCustomTileLoaderDataCacheStats().hits);
+  for (auto* receiver : {&first, &wrapped, &overzoomed})
+  {
+    ASSERT_NE(nullptr, receiver->tile->data());
+    auto layer = receiver->tile->data()->getLayer("any-name");
+    ASSERT_EQ(1u, layer->featureCount());
+    auto feature = layer->getFeature(0);
+    EXPECT_EQ(&payload->features()[0].geometry, &feature->getGeometries());
+    EXPECT_EQ(payload->features()[0].properties, feature->getProperties());
+    std::vector<Feature> queried;
+    receiver->tile->querySourceFeatures(queried, {});
+    ASSERT_EQ(1u, queried.size());
+    EXPECT_EQ(uint64_t{7}, queried[0].id.get<uint64_t>());
+  }
+}
+
+TEST(CustomGeometryTile, NativeCacheOffClearAndDroppedAttemptsKeepFetchSemantics)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id), second(test, id);
+  test.fetch(first);
+  test.fetch(first);
+  ASSERT_EQ(2u, test.requests.size());
+  EXPECT_EQ(test.requests[0], test.requests[1]);
+  setCustomTileLoaderDataCacheEnabled(false);
+  const auto before = getCustomTileLoaderDataCacheStats();
+  test.publish(id.canonical, test.requests[0], test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete(); }));
+  EXPECT_EQ(before.stores, getCustomTileLoaderDataCacheStats().stores);
+  test.fetch(second);
+  ASSERT_EQ(3u, test.requests.size());
+  EXPECT_EQ(test.requests[0], test.requests[2]);
+  setCustomTileLoaderDataCacheEnabled(true);
+  test.publish(id.canonical, test.requests[2], test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return second.tile->isComplete(); }));
+  test.loader.clearDataCache();
+  EXPECT_FALSE(test.requests[0].isCurrent());
+  test.fetch(first);
+  ASSERT_EQ(4u, test.requests.size());
+  EXPECT_TRUE(test.requests.back().isCurrent());
+  EXPECT_NE(test.requests[0], test.requests.back());
+}
+
+TEST(CustomGeometryTile, NativeCancellationAndRemovalKeepOtherReceivers)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id), second(test, id);
+  test.fetch(first);
+  test.fetch(second);
+  test.loader.cancelTile(id, first.token);
+  test.loader.removeTile(id, first.token);
+  EXPECT_TRUE(test.cancellations.empty());
+  const auto before = getCustomTileLoaderRegistrationStats();
+  test.loader.removeTile(id, first.token);
+  EXPECT_EQ(before.staleRemovesIgnored + 1, getCustomTileLoaderRegistrationStats().staleRemovesIgnored);
+  test.publish(id.canonical, test.requests[0], test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return second.tile->isComplete(); }));
+  EXPECT_FALSE(first.tile->isComplete());
+  test.loader.cancelTile(id, second.token);
+  ASSERT_EQ(1u, test.cancellations.size());
+  EXPECT_EQ(test.requests[0], test.cancellations[0]);
+  EXPECT_TRUE(test.requests[0].isCurrent());
+}
+
+TEST(CustomGeometryTile, NativeChangedKeyRejectsOldLoaderAndQueuedOwnerDeliveries)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id), replacement(test, id);
+  test.fetch(first);
+  const auto old = test.requests.back();
+  auto oldPayload = test.payload(id.canonical, "old");
+  test.publish(id.canonical, old, oldPayload);
+  test.key = "new-key";
+  test.inputs = std::make_shared<const int>(2);
+  test.fetch(replacement);
+  ASSERT_EQ(2u, test.requests.size());
+  EXPECT_FALSE(old.isCurrent());
+  const auto before = getCustomTileLoaderDataCacheStats();
+  test.publish(id.canonical, old, oldPayload);
+  EXPECT_EQ(before.stores, getCustomTileLoaderDataCacheStats().stores);
+  auto current = test.payload(id.canonical, "new");
+  test.publish(id.canonical, test.requests.back(), current);
+  ASSERT_TRUE(test.waitUntil([&] { return replacement.tile->isComplete(); }));
+  EXPECT_FALSE(first.tile->isComplete());
+  std::vector<Feature> queried;
+  replacement.tile->querySourceFeatures(queried, {});
+  ASSERT_EQ(1u, queried.size());
+  EXPECT_EQ("new", queried[0].properties.at("name").get<std::string>());
+}
+
+TEST(CustomGeometryTile, NativeInvalidationRejectsLayoutAndErrorBeforeAcceptance)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  test.fetch(receiver);
+  const auto ticket = test.requests.back();
+  receiver.tile->setNativeTileData(test.payload(id.canonical), ticket, {});
+  auto& observer = receiver.observer;
+  unsigned changed = 0, errors = 0;
+  observer.tileChanged = [&](const Tile&) { ++changed; };
+  observer.tileError = [&](const Tile&, std::exception_ptr) { ++errors; };
+  receiver.tile->setObserver(&observer);
+  test.state->invalidate(id.canonical);
+  EXPECT_FALSE(receiver.tile->acceptsResult());
+  auto rejected = emptyLayout();
+  rejected->trace.id = tiletrace::nextID();
+  auto inspected = rejected;
+  receiver.tile->onLayout(std::move(rejected), 2);
+  EXPECT_EQ(0u, inspected->trace.time[tiletrace::Layout]);
+  EXPECT_EQ(tiletrace::Outcome::StaleWorker, inspected->trace.outcome);
+  receiver.tile->onError(std::make_exception_ptr(std::runtime_error("old layout")), 2);
+  EXPECT_FALSE(receiver.tile->isComplete());
+  EXPECT_EQ(0u, changed);
+  EXPECT_EQ(0u, errors);
+}
+
+TEST(CustomGeometryTile, NativeProducerErrorDoesNotRevalidateOldDataDuringStyleReparse)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  test.fetch(receiver);
+  const auto first = test.requests.back();
+  receiver.tile->setNativeTileData(test.payload(id.canonical, "old"), first, {});
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  test.key = "replacement";
+  auto next = test.state->resolve(id.canonical, [&](const auto&) { return NativeRequestBinding{test.key, test.inputs}; }).ticket;
+  auto& observer = receiver.observer;
+  unsigned changed = 0, errors = 0;
+  observer.tileChanged = [&](const Tile&) { ++changed; };
+  observer.tileError = [&](const Tile&, std::exception_ptr) { ++errors; };
+  receiver.tile->setObserver(&observer);
+  receiver.tile->setNativeTileError(next, std::make_exception_ptr(std::runtime_error("producer failed")), {});
+  EXPECT_EQ(1u, errors);
+  EXPECT_TRUE(receiver.tile->isComplete());
+  EXPECT_FALSE(receiver.tile->acceptsResult());
+  CircleLayer layer("circle", "source");
+  receiver.tile->setLayers({makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(layer.baseImpl))});
+  receiver.tile->onLayout(emptyLayout(), 4);
+  receiver.tile->onError(std::make_exception_ptr(std::runtime_error("old error")), 2);
+  EXPECT_EQ(0u, changed);
+  EXPECT_EQ(1u, errors);
+  receiver.tile->setNativeTileData(test.payload(id.canonical, "new"), next, {});
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  EXPECT_TRUE(receiver.tile->acceptsResult());
+  EXPECT_GT(changed, 0u);
+  std::vector<Feature> queried;
+  receiver.tile->querySourceFeatures(queried, {});
+  ASSERT_EQ(1u, queried.size());
+  EXPECT_EQ("new", queried[0].properties.at("name").get<std::string>());
+}
+
+TEST(CustomGeometryTile, NativeResolverInvalidationNotifiesAnUnregisteredFirstReceiver)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  auto& observer = receiver.observer;
+  bool changed = false;
+  observer.tileChanged = [&](const Tile&) { changed = true; };
+  receiver.tile->setObserver(&observer);
+  test.resolver = [&](const auto&) { test.loader.clearDataCache(); return NativeRequestBinding{test.key, test.inputs}; };
+  test.fetch(receiver);
+  EXPECT_TRUE(test.requests.empty());
+  ASSERT_TRUE(test.waitUntil([&] { return changed; }));
+  test.resolver = {};
+  test.fetch(receiver);
+  ASSERT_EQ(1u, test.requests.size());
+  EXPECT_TRUE(test.requests.back().isCurrent());
+}
+
+TEST(CustomGeometryTile, NativeErrorsCompletePendingRequestsAndRejectOldTickets)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  auto& observer = receiver.observer;
+  unsigned errors = 0;
+  observer.tileError = [&](const Tile&, std::exception_ptr) { ++errors; };
+  receiver.tile->setObserver(&observer);
+  test.resolver = [](const auto&) { return NativeRequestBinding{}; };
+  test.fetch(receiver);
+  ASSERT_TRUE(test.waitUntil([&] { return errors == 1; }));
+  EXPECT_TRUE(receiver.tile->isComplete());
+  EXPECT_FALSE(receiver.tile->isRenderable());
+  test.resolver = {};
+  test.fetch(receiver);
+  ASSERT_EQ(1u, test.requests.size());
+  const auto old = test.requests[0];
+  test.loader.invalidateTile(id.canonical);
+  test.fetch(receiver);
+  test.loader.setNativeTileError(id.canonical, old, std::make_exception_ptr(std::runtime_error("stale")), {});
+  test.publish(id.canonical, test.requests.back(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isRenderable(); }));
+  EXPECT_EQ(1u, errors);
+}
+
+TEST(CustomGeometryTile, NativeQueuedOppositeFormatsCannotPopulateTheNewLoader)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver native(test, id);
+  auto geographic = std::make_shared<FeatureCollection>();
+  geographic->emplace_back(Point<double>{0, 0}, PropertyMap{{"name", "legacy"}}, uint64_t{99});
+  test.loaderActor.invoke(&CustomTileLoader::setTileFeatures, id.canonical, geographic);
+  test.fetch(native);
+  const auto ticket = test.requests.back();
+  auto nativePayload = test.payload(id.canonical);
+  const auto before = getCustomTileLoaderDataCacheStats();
+  test.publish(id.canonical, ticket, nativePayload);
+  ASSERT_TRUE(test.waitUntil([&] { return native.tile->isComplete(); }));
+  EXPECT_EQ(before.stores + 1, getCustomTileLoaderDataCacheStats().stores);
+  EXPECT_EQ("native", native.tile->data()->getLayer("")->getFeature(0)->getValue("name")->get<std::string>());
+
+  CustomTileLoader legacyLoader(nullptr, nullptr);
+  auto loaderMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+  ActorRef<CustomTileLoader> loaderActor(legacyLoader, loaderMailbox);
+  InspectableCustomTile legacy(id, "source", test.tileParameters,
+      makeMutable<CustomGeometrySource::TileOptions>(), loaderActor);
+  auto receiverMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+  ActorRef<CustomGeometryTile> receiverActor(legacy, receiverMailbox);
+  CircleLayer layer("circle", "source");
+  legacy.setLayers({makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(layer.baseImpl))});
+  legacyLoader.fetchTile(id, receiverActor, nextCustomTileRegistrationToken());
+  loaderActor.invoke(&CustomTileLoader::setTracedTilePayload, id.canonical, ticket, nativePayload, tiletrace::Context{});
+  loaderActor.invoke(&CustomTileLoader::setTileFeatures, id.canonical, geographic);
+  ASSERT_TRUE(test.waitUntil([&] { return legacy.isComplete(); }));
+  EXPECT_EQ("legacy", legacy.data()->getLayer("")->getFeature(0)->getValue("name")->get<std::string>());
+  EXPECT_TRUE(legacy.acceptsResult());
+  receiverMailbox->close();
+  loaderMailbox->close();
+}
+
+TEST(CustomGeometryTile, NativeSourceEpochRejectsAnotherLiveSourceTicket)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  NativeRequestState foreign(test.options);
+  auto foreignTicket = foreign.resolve(id.canonical, [&](const auto&) {
+    return NativeRequestBinding{test.key, test.inputs};
+  }).ticket;
+  test.fetch(receiver);
+  const auto before = getCustomTileLoaderDataCacheStats();
+  auto payload = test.payload(id.canonical);
+  test.publish(id.canonical, foreignTicket, payload);
+  receiver.tile->setNativeTileData(payload, foreignTicket, {});
+  EXPECT_EQ(before.stores, getCustomTileLoaderDataCacheStats().stores);
+  EXPECT_FALSE(receiver.tile->isComplete());
+  test.publish(id.canonical, test.requests.back(), payload);
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+}
+
+TEST(CustomGeometryTile, NativeStyleOnlyReparseKeepsTheCurrentDataToken)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  test.fetch(receiver);
+  const auto ticket = test.requests.back();
+  auto payload = test.payload(id.canonical);
+  test.publish(id.canonical, ticket, payload);
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  CircleLayer layer("circle", "source");
+  layer.setCircleRadius(10);
+  receiver.tile->setLayers({makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(layer.baseImpl))});
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  EXPECT_TRUE(ticket.isCurrent());
+  EXPECT_TRUE(receiver.tile->acceptsResult());
+  EXPECT_EQ(1u, test.requests.size());
+  EXPECT_EQ(&payload->features()[0].geometry,
+            &receiver.tile->data()->getLayer("")->getFeature(0)->getGeometries());
+}
+
+TEST(CustomGeometryTile, NativeCacheHitAfterCaptureResetKeepsValidityAndDoesNotRepeatReadiness)
+{
+  struct CaptureRestore
+  {
+    bool enabled = tiletrace::enabled();
+    ~CaptureRestore() { tiletrace::configure(enabled, true); }
+  } restore;
+  tiletrace::configure(false, true);
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id), second(test, id);
+  test.fetch(first);
+  auto ticket = test.requests.back();
+  auto payload = test.payload(id.canonical);
+  test.publish(id.canonical, ticket, payload);
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete(); }));
+  tiletrace::configure(true, true);
+  auto demand = tiletrace::create(11, 22, second.token, 0, 0, 0, 0, 0, 2, 0,
+                                 tiletrace::PayloadFormat::NativeGeometry);
+  test.loader.fetchTracedTile(id, second.actor, second.token, demand);
+  ASSERT_TRUE(test.waitUntil([&] { return second.tile->isComplete(); }));
+  EXPECT_TRUE(ticket.isCurrent());
+  EXPECT_EQ(1u, test.requests.size());
+  const auto& trace = second.tile->data()->trace;
+  EXPECT_EQ(tiletrace::PayloadFormat::NativeGeometry, trace.payloadFormat);
+  EXPECT_EQ(tiletrace::Origin::Processed, trace.origin);
+  EXPECT_EQ(0u, trace.time[tiletrace::Features]);
+  EXPECT_EQ(0u, trace.time[tiletrace::Loader]);
+  EXPECT_EQ(0u, trace.time[tiletrace::Converted]);
+  EXPECT_EQ(&payload->features()[0].geometry,
+            &second.tile->data()->getLayer("")->getFeature(0)->getGeometries());
+}
+
+TEST(CustomGeometryTile, DefaultGeometryResultHookPreservesSuccessAndErrorCallbacks)
+{
+  CustomTileTest test;
+  StubTileObserver observer;
+  unsigned changed = 0, errors = 0;
+  observer.tileChanged = [&](const Tile&) { ++changed; };
+  observer.tileError = [&](const Tile&, std::exception_ptr) { ++errors; };
+  GeometryTile tile(OverscaledTileID(0, 0, 0), "ordinary", test.tileParameters, &observer);
+  tile.onLayout(nullptr, 0);
+  EXPECT_TRUE(tile.isComplete());
+  EXPECT_TRUE(tile.isRenderable());
+  EXPECT_EQ(1u, changed);
+  tile.onError(std::make_exception_ptr(std::runtime_error("current")), 0);
+  EXPECT_EQ(1u, errors);
+  tile.setLayers({});
+  tile.onError(std::make_exception_ptr(std::runtime_error("old")), 0);
+  EXPECT_EQ(1u, errors);
+  tile.onError(std::make_exception_ptr(std::runtime_error("current")), 1);
+  EXPECT_EQ(2u, errors);
+  EXPECT_TRUE(tile.isComplete());
+}
+
+TEST(CustomGeometryTile, NativeCancellationRunsAfterUnlockAndAllowsReentry)
+{
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  test.fetch(receiver);
+  auto old = test.requests.back();
+  test.cancellationAction = [&](const CanonicalTileID&, const NativeRequestTicket&) { test.loader.clearDataCache(); };
+  test.loader.cancelTile(id, receiver.token);
+  ASSERT_EQ(1u, test.cancellations.size());
+  EXPECT_EQ(old, test.cancellations[0]);
+  EXPECT_FALSE(old.isCurrent());
+  test.cancellationAction = {};
+  test.fetch(receiver);
+  ASSERT_EQ(2u, test.requests.size());
+  EXPECT_TRUE(test.requests.back().isCurrent());
+}
+
+TEST(CustomGeometryTile, NativeThrowingCancelDoesNotAbortReplacementOrOtherCancellations)
+{
+  NativeTileTest test;
+  NativeTileTest::Receiver first(test, OverscaledTileID(0, 0, 0)), second(test, OverscaledTileID(1, 0, 0));
+  test.fetch(first);
+  const auto old = test.requests.back();
+  test.cancellationAction = [](const CanonicalTileID&, const NativeRequestTicket&) {
+    throw std::runtime_error("synthetic cancel failure");
+  };
+  test.key = "replacement";
+  EXPECT_NO_THROW(test.fetch(first));
+  ASSERT_EQ(2u, test.requests.size());
+  EXPECT_FALSE(old.isCurrent());
+  EXPECT_TRUE(test.requests.back().isCurrent());
+  test.fetch(second);
+  ASSERT_EQ(3u, test.requests.size());
+  EXPECT_NO_THROW(test.loader.clearDataCache());
+  EXPECT_EQ(3u, test.cancellations.size());
+  for (const auto& request : test.requests) EXPECT_FALSE(request.isCurrent());
+}
+
+TEST(CustomGeometryTile, NativeErrorFanoutRebasesCaptureAndReceiverIdentity)
+{
+  const auto capture = tiletrace::enabled();
+  Scoped restore([&] { tiletrace::configure(capture, true); });
+  for (int mode = 0; mode < 3; ++mode)
+  {
+    tiletrace::configure(mode != 0, true);
+    NativeTileTest test;
+    const CanonicalTileID canonical(0, 0, 0);
+    NativeTileTest::Receiver first(test, OverscaledTileID(0, 0, canonical));
+    NativeTileTest::Receiver wrapped(test, OverscaledTileID(2, 1, canonical));
+    NativeTileTest::Receiver overzoomed(test, OverscaledTileID(3, 0, canonical));
+    auto original = tiletrace::create(11, 22, first.token, 0, 0, 0, 0, 0, 2, 0,
+                                     tiletrace::PayloadFormat::NativeGeometry);
+    test.loader.fetchTracedTile(first.tile->id, first.actor, first.token, original);
+    const auto ticket = test.requests.back();
+    if (original.id)
+    {
+      original.id = original.publication = tiletrace::nextID();
+      original.kind = tiletrace::Kind::Publication;
+      original.origin = tiletrace::Origin::Fresh;
+      tiletrace::mark(original, tiletrace::Producer);
+    }
+    if (mode != 2) tiletrace::configure(true, true);
+    auto wrapDemand = tiletrace::create(11, 22, wrapped.token, 0, 0, 0, 2, 1, 3, 0,
+                                       tiletrace::PayloadFormat::NativeGeometry);
+    auto zoomDemand = tiletrace::create(11, 22, overzoomed.token, 0, 0, 0, 3, 0, 2, 0,
+                                       tiletrace::PayloadFormat::NativeGeometry);
+    test.loader.fetchTracedTile(wrapped.tile->id, wrapped.actor, wrapped.token, wrapDemand);
+    test.loader.fetchTracedTile(overzoomed.tile->id, overzoomed.actor, overzoomed.token, zoomDemand);
+    test.loader.setNativeTileError(canonical, ticket,
+        std::make_exception_ptr(std::runtime_error("producer error")), original);
+    ASSERT_TRUE(test.waitUntil([&] { return wrapped.tile->isComplete() && overzoomed.tile->isComplete(); }));
+    rapidjson::Document document;
+    document.Parse(tiletrace::snapshotJSON());
+    ASSERT_FALSE(document.HasParseError());
+    for (const auto& expected : {wrapDemand, zoomDemand})
+    {
+      bool demandFound = false, layoutFound = false;
+      for (const auto& record : document["records"].GetArray())
+      {
+        const auto id = std::stoull(record["id"].GetString());
+        const auto demand = std::stoull(record["demand"].GetString());
+        if (id == expected.id || (demand == expected.id && record["kind"].GetUint() == unsigned(tiletrace::Kind::Layout)))
+        {
+          EXPECT_STREQ("error", record["outcome"].GetString());
+          EXPECT_STREQ("native-geometry", record["payloadFormat"].GetString());
+          EXPECT_STREQ("22", record["source"].GetString());
+          EXPECT_EQ(expected.role, record["role"].GetUint());
+          EXPECT_EQ(expected.wrap, record["wrap"].GetInt());
+          EXPECT_EQ(expected.overscaledZ, record["overscaledZ"].GetUint());
+          EXPECT_EQ(expected.time[tiletrace::Request], std::stoull(record["timesUs"][tiletrace::Request].GetString()));
+          demandFound |= id == expected.id;
+          layoutFound |= record["kind"].GetUint() == unsigned(tiletrace::Kind::Layout);
+        }
+        if (mode == 2 && id == original.id)
+          EXPECT_STREQ("0", record["timesUs"][tiletrace::Delivered].GetString());
+      }
+      EXPECT_TRUE(demandFound);
+      EXPECT_TRUE(layoutFound);
+    }
+  }
+}
+
+TEST(CustomGeometryTile, NativePublicSourceRetiresTicketsBeforeItsLoaderDrains)
+{
+  CustomTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  for (int operation = 0; operation < 4; ++operation)
+  {
+    std::promise<NativeRequestTicket> issued;
+    auto ticketFuture = issued.get_future();
+    std::promise<void> resume;
+    auto resumedFuture = resume.get_future();
+    bool resumed = false;
+    CustomGeometrySource::Options options;
+    options.tileOptions = nativeOptions();
+    options.nativeCallbacks.resolve = [](const CanonicalTileID&) {
+      return NativeRequestBinding{"public-source", std::make_shared<const int>(1)};
+    };
+    options.nativeCallbacks.fetch = [&](const CanonicalTileID&, const NativeRequestTicket& ticket, tiletrace::Context) {
+      issued.set_value(ticket);
+      resumedFuture.wait();
+    };
+    options.nativeCallbacks.cancel = [](const CanonicalTileID&, const NativeRequestTicket&) {};
+    auto source = std::make_unique<CustomGeometrySource>("public-source", options);
+    Scoped unblock([&] { if (!resumed) { resumed = true; resume.set_value(); } });
+    source->loadDescription(*test.fileSource);
+    const auto loader = *source->impl().getTileLoader();
+    InspectableCustomTile receiver(id, "public-source", test.tileParameters,
+        source->impl().getTileOptions(), loader, nullptr, source->impl().getNativeSourceEpoch());
+    auto mailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
+    ActorRef<CustomGeometryTile> actor(receiver, mailbox);
+    loader.invoke(&CustomTileLoader::fetchTile, id, actor, nextCustomTileRegistrationToken());
+    ASSERT_EQ(std::future_status::ready, ticketFuture.wait_for(std::chrono::seconds(2)));
+    auto ticket = ticketFuture.get();
+    ASSERT_TRUE(ticket.isCurrent());
+    NativeTileBuilder builder({id.canonical, nativeTileConversionContract(options.tileOptions)});
+    source->setTracedTilePayload(id.canonical, ticket, std::move(builder).seal());
+    if (operation == 3)
+    {
+      auto release = std::async(std::launch::async, [&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (ticket.isCurrent() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        const bool retired = !ticket.isCurrent();
+        resume.set_value();
+        return retired;
+      });
+      source.reset();
+      resumed = true;
+      EXPECT_TRUE(release.get());
+    }
+    else
+    {
+      if (operation == 0) source->invalidateTile(id.canonical);
+      if (operation == 1) source->invalidateRegion(LatLngBounds(id.canonical));
+      if (operation == 2) source->clearTileCache();
+      EXPECT_FALSE(ticket.isCurrent());
+      resumed = true;
+      resume.set_value();
+    }
+    mailbox->close();
+  }
+}
+
+TEST(CustomGeometryTile, NativeReplacementDoesNotFetchAfterReentrantReceiverCancellationOrRemoval)
+{
+  for (bool remove : {false, true})
+  {
+    NativeTileTest test;
+    const OverscaledTileID id(0, 0, 0);
+    NativeTileTest::Receiver receiver(test, id);
+    test.fetch(receiver);
+    const auto old = test.requests.back();
+    const auto issued = getCustomTileLoaderRegistrationStats().fetchesIssued;
+    test.cancellationAction = [&](const CanonicalTileID&, const NativeRequestTicket& ticket) {
+      if (ticket != old) return;
+      if (remove) test.loader.removeTile(id, receiver.token);
+      else test.loader.cancelTile(id, receiver.token);
+    };
+    test.key = "replacement";
+    test.fetch(receiver);
+    EXPECT_EQ(1u, test.requests.size());
+    EXPECT_EQ(issued, getCustomTileLoaderRegistrationStats().fetchesIssued);
+    ASSERT_EQ(2u, test.cancellations.size());
+    EXPECT_TRUE(test.cancellations.back().isCurrent());
+    const auto cancelled = test.cancellations.back();
+    test.cancellationAction = {};
+    test.fetch(receiver);
+    ASSERT_EQ(2u, test.requests.size());
+    EXPECT_EQ(cancelled, test.requests.back());
+  }
+}
+
+TEST(CustomGeometryTile, NativeLateProducerErrorDoesNotDiscardSuccessfulPendingLayoutOrCache)
+{
+  const auto capture = tiletrace::enabled();
+  Scoped restore([&] { tiletrace::configure(capture, true); });
+  for (bool cached : {false, true})
+  {
+    for (bool publicationID : {false, true})
+    {
+      tiletrace::configure(true, true);
+      NativeTileTest test;
+      setCustomTileLoaderDataCacheEnabled(cached);
+      const OverscaledTileID id(0, 0, 0);
+      NativeTileTest::Receiver receiver(test, id);
+      unsigned errors = 0;
+      receiver.observer.tileError = [&](const Tile&, std::exception_ptr) { ++errors; };
+      auto demand = tiletrace::create(11, 22, receiver.token, 0, 0, 0, 0, 0, 2, 0,
+                                     tiletrace::PayloadFormat::NativeGeometry);
+      test.loader.fetchTracedTile(id, receiver.actor, receiver.token, demand);
+      const auto ticket = test.requests.back();
+      auto trace = demand;
+      if (publicationID)
+      {
+        trace.id = trace.publication = tiletrace::nextID();
+        trace.kind = tiletrace::Kind::Publication;
+        tiletrace::mark(trace, tiletrace::Producer);
+      }
+      tiletrace::markNativeReady(trace);
+      auto payload = test.payload(id.canonical);
+      test.loader.setTracedTilePayload(id.canonical, ticket, payload, trace);
+      test.loader.setNativeTileError(id.canonical, ticket,
+          std::make_exception_ptr(std::runtime_error("late same-publication failure")), trace);
+      test.loader.setNativeTileError(id.canonical, ticket,
+          std::make_exception_ptr(std::runtime_error("late admission failure")), demand);
+      auto other = trace;
+      other.id = other.publication = tiletrace::nextID();
+      other.kind = tiletrace::Kind::Publication;
+      test.loader.setNativeTileError(id.canonical, ticket,
+          std::make_exception_ptr(std::runtime_error("separate failed attempt")), other);
+      ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+      EXPECT_TRUE(receiver.tile->isRenderable());
+      EXPECT_EQ(0u, errors);
+      EXPECT_EQ(&payload->features()[0].geometry,
+                &receiver.tile->data()->getLayer("")->getFeature(0)->getGeometries());
+      rapidjson::Document document;
+      document.Parse(tiletrace::snapshotJSON());
+      ASSERT_FALSE(document.HasParseError());
+      bool separateError = false;
+      for (const auto& record : document["records"].GetArray())
+      {
+        const auto recordID = std::stoull(record["id"].GetString());
+        if (recordID == trace.id || recordID == demand.id)
+          EXPECT_STRNE("error", record["outcome"].GetString());
+        if (recordID == other.id)
+        {
+          EXPECT_STREQ("error", record["outcome"].GetString());
+          separateError = true;
+        }
+      }
+      EXPECT_TRUE(separateError);
+      const auto before = getCustomTileLoaderDataCacheStats();
+      NativeTileTest::Receiver second(test, id);
+      test.fetch(second);
+      if (cached)
+      {
+        ASSERT_TRUE(test.waitUntil([&] { return second.tile->isComplete(); }));
+        EXPECT_EQ(before.hits + 1, getCustomTileLoaderDataCacheStats().hits);
+        EXPECT_EQ(1u, test.requests.size());
+      }
+      else
+      {
+        EXPECT_EQ(2u, test.requests.size());
+        test.loader.setNativeTileError(id.canonical, ticket,
+            std::make_exception_ptr(std::runtime_error("receiver without bytes failed")), trace);
+        ASSERT_TRUE(test.waitUntil([&] { return second.tile->isComplete(); }));
+        EXPECT_FALSE(second.tile->isRenderable());
+      }
+      receiver.tile->onError(std::make_exception_ptr(std::runtime_error("real layout failure")), 2);
+      EXPECT_EQ(1u, errors);
+    }
+  }
 }

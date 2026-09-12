@@ -4,6 +4,7 @@
 #include <mln/style/sources/custom_geometry_source.hpp>
 #include <mln/tile/tile_id.hpp>
 #include <mln/util/geojson.hpp>
+#include <mln/tile/native_tile_payload.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <variant>
 
 namespace mln {
 
@@ -44,6 +46,7 @@ class CustomTileLoader {
 public:
     using TileFeatureCollection = mapbox::feature::feature_collection<int16_t>;
     using TileFeatureCollectionPtr = std::shared_ptr<const TileFeatureCollection>;
+    using ProcessedTilePayload = std::variant<TileFeatureCollectionPtr, NativeTilePayloadPtr>;
     CustomTileLoader(const CustomTileLoader&) = delete;
     CustomTileLoader& operator=(const CustomTileLoader&) = delete;
 
@@ -52,7 +55,10 @@ public:
     CustomTileLoader(const TileFunction& fetchTileFn,
                      const TileFunction& cancelTileFn,
                      const CustomGeometrySource::TileOptions& tileOptions = {},
-                     std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch = {});
+                     std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch = {},
+                     NativeTileCallbacks nativeCallbacks = {}, std::shared_ptr<NativeRequestState> nativeState = nullptr);
+    ~CustomTileLoader();
+    uint64_t nativeSourceEpoch() const noexcept;
 
     void fetchTile(const OverscaledTileID& tileID,
                    const ActorRef<CustomGeometryTile>& tileRef,
@@ -60,6 +66,8 @@ public:
     void fetchTracedTile(const OverscaledTileID&, const ActorRef<CustomGeometryTile>&,
                          RegistrationToken, tiletrace::Context);
     void setTracedTileFeatures(const CanonicalTileID&, std::shared_ptr<const FeatureCollection>, tiletrace::Context);
+    void setTracedTilePayload(const CanonicalTileID&, NativeRequestTicket, NativeTilePayloadPtr, tiletrace::Context);
+    void setNativeTileError(const CanonicalTileID&, NativeRequestTicket, std::exception_ptr, tiletrace::Context);
     void cancelTile(const OverscaledTileID& tileID, RegistrationToken token);
 
     void removeTile(const OverscaledTileID& tileID, RegistrationToken token);
@@ -89,13 +97,27 @@ private:
         // entry dies. Publishing does not clear it, the producer may still hold
         // work for this tile after one receiver got its data.
         bool producerWanted = false;
+        NativeRequestTicket nativeTicket;
+        // Protect successful publication traces from duplicate producer errors.
+        std::optional<tiletrace::ID> nativePublication;
+    };
+    struct NativeCancellation {
+        CanonicalTileID tile;
+        NativeRequestTicket ticket;
     };
 
     void invokeTileFetch(const CanonicalTileID& tileID);
-    void invokeTileCancel(const CanonicalTileID& tileID,
-                          tiletrace::Retirement reason = tiletrace::Retirement::NoDemand);
+    void invokeTileCancel(const CanonicalTileID& tileID, std::vector<NativeCancellation>&,
+                          tiletrace::Retirement reason = tiletrace::Retirement::NoDemand,
+                          NativeRequestTicket ticket = {});
+    void notifyNativeCancellations(std::vector<NativeCancellation>&) noexcept;
+    static tiletrace::Context deliveryTrace(const CanonicalTileID&, const tiletrace::Context&, const TileRegistration&);
+    void publish(const CanonicalTileID&, ProcessedTilePayload, tiletrace::Context,
+                 NativeRequestTicket = {}, bool traced = true);
+    bool accepts(const CanonicalTileID&, const NativeRequestTicket&) const;
     // Both expect dataMutex to be held.
-    void releaseProducerIfUnwanted(const CanonicalTileID& tileID, CanonicalEntry& entry);
+    void releaseProducerIfUnwanted(const CanonicalTileID& tileID, CanonicalEntry& entry,
+                                  std::vector<NativeCancellation>&);
     void dropEntryIfEmpty(const CanonicalTileID& tileID);
 
     std::function<void(const CanonicalTileID&, tiletrace::Context)> tracedFetch;
@@ -103,15 +125,20 @@ private:
     TileFunction fetchTileFunction;
     TileFunction cancelTileFunction;
     CustomGeometrySource::TileOptions tileOptions;
+    NativeTileCallbacks nativeCallbacks;
+    std::shared_ptr<NativeRequestState> nativeState;
     std::unordered_map<CanonicalTileID, CanonicalEntry> tileCallbackMap;
     // Keep around processed tile-local geometry to serve back for wrapped and over-zoomed tiles.
 public:
     struct CachedData {
-        TileFeatureCollectionPtr features;
+        ProcessedTilePayload payload{TileFeatureCollectionPtr{}};
         tiletrace::Context trace;
+        NativeRequestTicket nativeTicket;
         CachedData() = default;
-        CachedData(TileFeatureCollectionPtr value) : features(std::move(value)) {}
-        CachedData& operator=(TileFeatureCollectionPtr value) { features = std::move(value); trace = {}; return *this; }
+        CachedData(TileFeatureCollectionPtr value) : payload(std::move(value)) {}
+        CachedData& operator=(TileFeatureCollectionPtr value) {
+            payload = std::move(value); trace = {}; nativeTicket = {}; return *this;
+        }
     };
 private:
     std::map<CanonicalTileID, CachedData> dataCache;

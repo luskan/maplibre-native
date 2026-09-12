@@ -106,6 +106,8 @@ public:
     void setFeatureState(const LayerFeatureStates&) override;
 
 protected:
+    virtual bool acceptsPendingDataResult() const { return true; }
+    void setPendingDataError(std::exception_ptr, tiletrace::Context);
     const GeometryTileData* getData() const;
     const tiletrace::Context* retainedTraceForDiagnostics() const {
         return layoutResult ? &layoutResult->trace : nullptr;
@@ -116,6 +118,7 @@ protected:
     std::atomic<bool> obsolete{false};
 
 private:
+    void applyDataError(std::exception_ptr, tiletrace::Context);
     void markObsolete();
 
     TaggedScheduler threadPool;
