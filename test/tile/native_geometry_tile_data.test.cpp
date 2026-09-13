@@ -285,12 +285,27 @@ TEST(NativeTilePayload, MovesGeometryPropertiesAndLongIDsIntoSealedStorage)
   EXPECT_EQ(2u, stats.coordinateCount);
   EXPECT_EQ(properties().size(), stats.propertyCount);
   EXPECT_EQ(geometryBytes, stats.geometryBytes);
+  EXPECT_EQ(geometryBytes, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::LineString)]);
+  EXPECT_EQ(0u, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::Unknown)]);
+  EXPECT_EQ(0u, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::Point)]);
+  EXPECT_EQ(0u, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::Polygon)]);
   EXPECT_GE(stats.recordBytes, 21u * sizeof(NativeFeatureRecord));
   EXPECT_GT(stats.propertyBytes, first.properties.size() * sizeof(PropertyMap::value_type));
   EXPECT_EQ(first.id.get<std::string>().capacity() + 1, stats.identifierBytes);
   EXPECT_EQ(
       sizeof(NativeTilePayload) + stats.recordBytes + stats.geometryBytes + stats.propertyBytes + stats.identifierBytes,
       stats.estimatedRetainedBytes);
+}
+
+TEST(NativeTilePayload, RetainsGenericFeatureTypeCounts)
+{
+  auto payload = fixturePayload();
+  GeoJSONTileData legacy(rawFeatures());
+  auto layer = legacy.getLayer("");
+  std::array<std::size_t, 4> expected{};
+  for (std::size_t i = 0; i < layer->featureCount(); ++i)
+    ++expected[static_cast<std::size_t>(layer->getFeature(i)->getType())];
+  EXPECT_EQ(expected, payload->statistics().featureTypeCounts);
 }
 
 TEST(NativeTilePayload, SealPreventsFurtherMutationOrResealing)

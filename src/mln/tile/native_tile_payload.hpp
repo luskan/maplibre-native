@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mln/tile/geometry_tile_data.hpp>
+#include <array>
 #include <mln/tile/tile_id.hpp>
 #include <mln/style/sources/custom_geometry_source.hpp>
 
@@ -36,6 +37,8 @@ struct NativeTileMetadata
 struct NativeTileStatistics
 {
   std::size_t featureCount = 0;
+  std::array<std::size_t, 4> featureTypeCounts{};
+  std::array<std::size_t, 4> featureTypeGeometryBytes{};
   std::size_t partCount = 0;
   std::size_t coordinateCount = 0;
   std::size_t propertyCount = 0;

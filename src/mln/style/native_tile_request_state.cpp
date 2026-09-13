@@ -156,35 +156,27 @@ void NativeRequestState::invalidate(const CanonicalTileID& tile)
 
 void NativeRequestState::invalidateRegion(const LatLngBounds& bounds)
 {
-  std::vector<std::shared_ptr<NativeCanonicalState>> slots;
+  std::lock_guard lock(mutex_);
+  for (const auto& [tile, weak] : slots_)
   {
-    std::lock_guard lock(mutex_);
-    std::map<uint8_t, util::TileRange> ranges;
-    for (const auto& [tile, weak] : slots_)
+    auto range = util::TileRange::fromLatLngBounds(bounds, tile.z);
+    if (range.contains(tile))
     {
-      auto found = ranges.find(tile.z);
-      if (found == ranges.end()) found = ranges.emplace(tile.z, util::TileRange::fromLatLngBounds(bounds, tile.z)).first;
-      if (found->second.contains(tile))
-      {
-        slots.push_back(weak.lock());
-        if (slots.back()) retireSlot(slots.back());
-      }
+      if (auto slot = weak.lock()) retireSlot(slot);
     }
   }
 }
 
 void NativeRequestState::clear()
 {
-  std::vector<std::shared_ptr<NativeCanonicalState>> slots;
+  std::lock_guard lock(mutex_);
+  // Slots own only weak validity references, so retirement cannot destroy caller inputs.
+  // Avoid allocating here because clear is also used during failure recovery and teardown.
+  for (const auto& [tile, weak] : slots_)
   {
-    std::lock_guard lock(mutex_);
-    for (const auto& [tile, weak] : slots_)
-    {
-      slots.push_back(weak.lock());
-      if (slots.back()) retireSlot(slots.back());
-    }
-    slots_.clear();
+    if (auto slot = weak.lock()) retireSlot(slot);
   }
+  slots_.clear();
 }
 
 void NativeRequestState::retire()

@@ -138,6 +138,7 @@ void NativeTileBuilder::appendFinal(FeatureType type, GeometryCollection&& geome
 
   auto statistics = statistics_;
   statistics.featureCount = addBytes(statistics.featureCount, 1);
+  ++statistics.featureTypeCounts[static_cast<std::size_t>(type)];
   statistics.partCount = addBytes(statistics.partCount, geometry.size());
   statistics.propertyCount = addBytes(statistics.propertyCount, properties.size());
   statistics.geometryBytes =
@@ -148,6 +149,7 @@ void NativeTileBuilder::appendFinal(FeatureType type, GeometryCollection&& geome
     statistics.geometryBytes =
         addBytes(statistics.geometryBytes, storageBytes(part.capacity(), sizeof(GeometryCoordinate)));
   }
+  statistics.featureTypeGeometryBytes[static_cast<std::size_t>(type)] += statistics.geometryBytes - statistics_.geometryBytes;
   statistics.propertyBytes = addBytes(statistics.propertyBytes, propertyBytes(properties));
   if (id.is<std::string>())
   {
