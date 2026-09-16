@@ -70,6 +70,7 @@ public:
     class LayoutResult {
     public:
         tiletrace::Context trace;
+        layouttiming::Profile timing;
         mln::unordered_map<std::string, LayerRenderData> layerRenderData;
         std::shared_ptr<FeatureIndex> featureIndex;
         gfx::GlyphAtlas glyphAtlas;

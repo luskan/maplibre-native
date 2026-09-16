@@ -1,4 +1,6 @@
 #include <mln/util/tile_trace.hpp>
+#include <mln/util/layout_timing.hpp>
+#include <ctime>
 
 #include <algorithm>
 #include <atomic>
@@ -1784,7 +1786,323 @@ std::string snapshotJSON()
     out << "[\"" << event.time << "\",\"" << event.id << "\",\"" << event.map << "\","
         << event.type << ',' << event.value << ']';
   }
-  out << "]}";
+  out << "],\"layoutTimings\":" << layouttiming::snapshotJSON(snapshotSession) << '}';
   return out.str();
 }
 } // namespace mln::tiletrace
+
+namespace mln::layouttiming {
+namespace {
+constexpr size_t TimingCapacity = 128;
+#ifdef TILE_TRACE_TESTING
+void (*seedTestHook)() = nullptr;
+#endif
+struct TimingRecord
+{
+  tiletrace::Context context;
+  Profile profile;
+  uint64_t sequence = 0, ownerReceived = 0, ownerCorrelation = 0, resultCorrelation = 0;
+  Disposition disposition = Disposition::None;
+};
+struct TimingStore
+{
+  std::mutex mutex;
+  std::atomic<bool> enabled{false};
+  std::atomic<uint64_t> generation{1}, lost{0}, stale{0}, revision{0};
+  std::array<TimingRecord, TimingCapacity> records{};
+  uint64_t sequence = 0, overwritten = 0;
+  size_t count = 0;
+};
+TimingStore& timingStore()
+{
+  static TimingStore value;
+  return value;
+}
+void addMeasure(Measure& value, Stamp start, Stamp end, bool& valid) noexcept
+{
+  ++value.calls;
+  if (!start.wall || end.wall < start.wall) valid = false;
+  else value.wall += end.wall - start.wall;
+  if (!start.cpuValid || !end.cpuValid || end.cpu < start.cpu) value.cpuValid = false;
+  else value.cpu += end.cpu - start.cpu;
+}
+const char* dispositionName(Disposition value) noexcept
+{
+  constexpr const char* names[] = {"accepted", "correlation-rejected", "input-rejected", "replaced",
+    "reset", "error", "obsolete", "destroyed", "none"};
+  return names[static_cast<unsigned>(value)];
+}
+void quotedName(std::ostream& out, const std::array<char, 80>& name)
+{
+  constexpr char hex[] = "0123456789abcdef";
+  out << '"';
+  for (unsigned char c : name)
+  {
+    if (!c) break;
+    if (c == '"' || c == '\\') out << '\\' << char(c);
+    else if (c < 32 || c > 126) out << "\\u00" << hex[c >> 4] << hex[c & 15];
+    else out << char(c);
+  }
+  out << '"';
+}
+void measureJSON(std::ostream& out, const Measure& value)
+{
+  out << "{\"wallUs\":\"" << value.wall << "\",\"calls\":\"" << value.calls
+      << "\",\"cpuAvailable\":" << (value.cpuValid ? "true" : "false") << ",\"threadCpuUs\":";
+  if (value.cpuValid) out << '"' << value.cpu << '"';
+  else out << "null";
+  out << '}';
+}
+} // namespace
+
+bool enabled() noexcept { return timingStore().enabled.load(std::memory_order_relaxed); }
+void configure(bool enable, bool reset) noexcept
+{
+  auto& store = timingStore();
+  std::lock_guard lock(store.mutex);
+  if (store.enabled.load() != enable || reset) ++store.generation;
+  store.enabled.store(enable);
+  ++store.revision;
+  if (reset)
+  {
+    store.count = 0;
+    store.sequence = 0;
+    store.overwritten = 0;
+    store.lost = 0;
+    store.stale = 0;
+  }
+}
+Seed makeSeed(const tiletrace::Context& trace, uint64_t correlation) noexcept
+{
+  const auto generation = timingStore().generation.load();
+  const auto captureGeneration = tiletrace::captureGeneration();
+  if (!enabled() || !tiletrace::enabled() || !trace.id || trace.session != tiletrace::session()
+      || !trace.time[tiletrace::Delivered]) return {};
+  const auto queued = tiletrace::now();
+#ifdef TILE_TRACE_TESTING
+  if (seedTestHook) seedTestHook();
+#endif
+  if (!enabled() || !tiletrace::enabled() || generation != timingStore().generation.load()
+      || captureGeneration != tiletrace::captureGeneration() || trace.session != tiletrace::session()) return {};
+  return {generation, trace.session, trace.id, correlation, trace.time[tiletrace::Delivered], queued, captureGeneration};
+}
+Stamp sample() noexcept
+{
+  Stamp stamp;
+  stamp.wall = tiletrace::now();
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+  timespec value{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) == 0)
+  {
+    stamp.cpu = uint64_t(value.tv_sec) * 1000000 + uint64_t(value.tv_nsec) / 1000;
+    stamp.cpuValid = true;
+  }
+#endif
+  return stamp;
+}
+void Tracker::start(Seed seed, uint64_t received) noexcept
+{
+  if (!seed.generation)
+  {
+    if (value.seed.generation) clear();
+    return;
+  }
+  clear();
+  value.seed = seed;
+  value.received = received;
+  if (active() && (!seed.delivered || seed.queued < seed.delivered || received < seed.queued)) value.valid = false;
+}
+bool Tracker::active() const noexcept
+{
+  return value.seed.generation && enabled() && value.seed.generation == timingStore().generation.load()
+    && tiletrace::enabled() && value.seed.session == tiletrace::session()
+    && value.seed.captureGeneration == tiletrace::captureGeneration();
+}
+void Tracker::closeGap(uint64_t at) noexcept
+{
+  if (!gapStart) return;
+  if (at < gapStart) value.valid = false;
+  else value.gaps[static_cast<size_t>(gap)].wall += at - gapStart;
+  gapStart = 0;
+}
+void Tracker::enter(uint64_t at) noexcept
+{
+  if (active() && depth++ == 0) closeGap(at);
+}
+void Tracker::leave(uint64_t at, Gap next, unsigned state, bool pending) noexcept
+{
+  if (!active()) return;
+  if (!depth) { value.valid = false; return; }
+  if (--depth) return;
+  gap = next;
+  gapStart = at;
+  auto& measure = value.gaps[static_cast<size_t>(gap)];
+  ++measure.intervals;
+  measure.pendingIntervals += pending;
+  if (state < 32) measure.stateMask |= uint32_t{1} << state;
+}
+void Tracker::add(Phase phase, Stamp start, Stamp end) noexcept
+{
+  if (active()) addMeasure(value.work[static_cast<size_t>(phase)], start, end, value.valid);
+}
+void Tracker::addGroup(Group group) noexcept
+{
+  if (!active()) return;
+  ++value.groupsSeen;
+  if (value.groupCount < value.groups.size()) value.groups[value.groupCount++] = group;
+  else
+  {
+    auto found = std::min_element(value.groups.begin(), value.groups.end(),
+      [](const Group& a, const Group& b) { return a.work.wall < b.work.wall; });
+    if (found->work.wall < group.work.wall) *found = group;
+  }
+}
+Profile Tracker::result(uint64_t posted) noexcept
+{
+  auto result = value;
+  result.posted = posted;
+  result.resultsBefore = resultCount++;
+  result.resultOrdinal = resultCount;
+  if (posted < value.received) result.valid = false;
+  return result;
+}
+Profile Tracker::finish(uint64_t ended) noexcept
+{
+  closeGap(ended);
+  auto result = value;
+  result.ended = ended;
+  result.resultsBefore = resultCount;
+  if (depth || ended < value.received) result.valid = false;
+  clear();
+  return result;
+}
+WorkScope::WorkScope(Tracker& value, Phase phase_) noexcept
+  : tracker(value.active() ? &value : nullptr), phase(phase_), start(tracker ? sample() : Stamp{}),
+    exceptions(std::uncaught_exceptions()) {}
+WorkScope::~WorkScope() { finish(); }
+void WorkScope::finish() noexcept
+{
+  if (!tracker) return;
+  tracker->add(phase, start, sample());
+  if (std::uncaught_exceptions() > exceptions) tracker->terminate(Disposition::Error);
+  tracker = nullptr;
+}
+GroupScope::GroupScope(Tracker& value, std::string_view name, uint64_t features, bool required) noexcept
+  : tracker(value.active() ? &value : nullptr), start(tracker ? sample() : Stamp{})
+{
+  if (!tracker) return;
+  const auto count = std::min(name.size(), group.name.size() - 1);
+  std::copy_n(name.data(), count, group.name.data());
+  group.nameTruncated = count != name.size();
+  group.features = features;
+  group.layoutRequired = required;
+  group.parseOrdinal = tracker->nextParseOrdinal();
+}
+GroupScope::~GroupScope()
+{
+  if (!tracker) return;
+  bool valid = true;
+  addMeasure(group.work, start, sample(), valid);
+  if (!valid) tracker->invalidate();
+  tracker->addGroup(group);
+}
+void publish(const tiletrace::Context& context, const Profile& profile, Disposition disposition,
+             uint64_t ownerReceived, uint64_t ownerCorrelation, uint64_t resultCorrelation) noexcept
+{
+  if (!profile.seed.generation) return;
+  auto& store = timingStore();
+  if (!store.enabled.load() || profile.seed.generation != store.generation.load()
+      || profile.seed.session != tiletrace::session() || context.session != profile.seed.session
+      || !tiletrace::enabled() || profile.seed.captureGeneration != tiletrace::captureGeneration())
+  { ++store.stale; return; }
+  std::unique_lock lock(store.mutex, std::try_to_lock);
+  if (!lock) { ++store.lost; return; }
+  if (!store.enabled.load() || profile.seed.generation != store.generation.load()
+      || profile.seed.session != tiletrace::session()
+      || profile.seed.captureGeneration != tiletrace::captureGeneration()) { ++store.stale; return; }
+  const auto sequence = ++store.sequence;
+  if (store.count == store.records.size()) ++store.overwritten;
+  else ++store.count;
+  store.records[(sequence - 1) % store.records.size()] =
+    {context, profile, sequence, ownerReceived, ownerCorrelation, resultCorrelation, disposition};
+  ++store.revision;
+}
+std::string snapshotJSON(uint64_t captureSession)
+{
+  auto& store = timingStore();
+  const auto captureGeneration = tiletrace::captureGeneration();
+  std::array<TimingRecord, TimingCapacity> records;
+  uint64_t generation, sequence, overwritten, lost, stale, revision;
+  size_t count;
+  bool recording;
+  {
+    std::unique_lock lock(store.mutex, std::try_to_lock);
+    if (!lock) return "{\"version\":1,\"available\":false}";
+    generation = store.generation.load(); recording = store.enabled.load();
+    sequence = store.sequence; overwritten = store.overwritten; count = store.count;
+    lost = store.lost.load(); stale = store.stale.load(); revision = store.revision.load();
+    for (size_t i = 0; i < count; ++i) records[i] = store.records[(sequence - count + i) % TimingCapacity];
+  }
+  const bool coherent = revision == store.revision.load() && generation == store.generation.load()
+    && lost == store.lost.load() && stale == store.stale.load() && captureSession == tiletrace::session()
+    && captureGeneration == tiletrace::captureGeneration();
+  std::ostringstream out;
+  out << "{\"version\":1,\"available\":" << (coherent ? "true" : "false")
+      << ",\"enabled\":" << (recording ? "true" : "false")
+      << ",\"generation\":\"" << generation << "\",\"captureGeneration\":\"" << captureGeneration
+      << "\",\"capacity\":" << TimingCapacity
+      << ",\"sequence\":\"" << sequence << "\",\"overwritten\":\"" << overwritten
+      << "\",\"lost\":\"" << lost << "\",\"stale\":\"" << stale << "\",\"records\":[";
+  bool first = true;
+  for (size_t i = 0; i < count; ++i)
+  {
+    const auto& r = records[i]; const auto& p = r.profile; const auto& c = r.context;
+    if (c.session != captureSession) continue;
+    if (!first) out << ',';
+    first = false;
+    out << "{\"sequence\":\"" << r.sequence << "\",\"observerGeneration\":\"" << p.seed.generation
+        << "\",\"captureGeneration\":\"" << p.seed.captureGeneration
+        << "\",\"session\":\"" << c.session << "\",\"map\":\"" << c.map << "\",\"source\":\"" << c.source
+        << "\",\"publication\":\"" << c.publication << "\",\"consumer\":\"" << c.consumer
+        << "\",\"inputId\":\"" << p.seed.inputId << "\",\"layoutId\":\""
+        << (c.kind == tiletrace::Kind::Layout ? c.id : 0) << "\",\"disposition\":\"" << dispositionName(r.disposition)
+        << "\",\"valid\":" << (p.valid ? "true" : "false")
+        << ",\"dataCorrelation\":\"" << p.seed.correlation << "\",\"resultCorrelation\":\"" << r.resultCorrelation
+        << "\",\"ownerCorrelation\":\"" << r.ownerCorrelation << "\",\"deliveredUs\":\"" << p.seed.delivered
+        << "\",\"ownerQueuedUs\":\"" << p.seed.queued << "\",\"workerReceivedUs\":\"" << p.received
+        << "\",\"resultPostedUs\":\"" << p.posted << "\",\"ownerReceivedUs\":\"" << r.ownerReceived
+        << "\",\"ownerAcceptedUs\":\"" << (r.disposition == Disposition::Accepted ? c.time[tiletrace::Layout] : 0)
+        << "\",\"terminalUs\":\"" << p.ended << "\",\"resultOrdinal\":\"" << p.resultOrdinal
+        << "\",\"resultsBefore\":\"" << p.resultsBefore << "\",\"work\":{";
+    constexpr const char* phases[] = {"parse", "finalize", "callback"};
+    for (size_t j = 0; j < p.work.size(); ++j)
+    {
+      if (j) out << ',';
+      out << '"' << phases[j] << "\":"; measureJSON(out, p.work[j]);
+    }
+    out << "},\"gaps\":{";
+    constexpr const char* gaps[] = {"inputs", "coalescing", "dependencies", "idle"};
+    for (size_t j = 0; j < p.gaps.size(); ++j)
+    {
+      const auto& gap = p.gaps[j];
+      if (j) out << ',';
+      out << '"' << gaps[j] << "\":{\"wallUs\":\"" << gap.wall << "\",\"intervals\":\"" << gap.intervals
+          << "\",\"pendingIntervals\":\"" << gap.pendingIntervals << "\",\"stateMask\":" << gap.stateMask << '}';
+    }
+    out << "},\"groupsSeen\":\"" << p.groupsSeen << "\",\"topGroups\":[";
+    for (size_t j = 0; j < p.groupCount; ++j)
+    {
+      const auto& group = p.groups[j];
+      if (j) out << ',';
+      out << "{\"name\":"; quotedName(out, group.name);
+      out << ",\"nameTruncated\":" << (group.nameTruncated ? "true" : "false")
+          << ",\"parseOrdinal\":\"" << group.parseOrdinal << "\",\"features\":\"" << group.features
+          << "\",\"layoutRequired\":" << (group.layoutRequired ? "true" : "false") << ",\"work\":";
+      measureJSON(out, group.work); out << '}';
+    }
+    out << "]}";
+  }
+  out << "]}";
+  return out.str();
+}
+} // namespace mln::layouttiming

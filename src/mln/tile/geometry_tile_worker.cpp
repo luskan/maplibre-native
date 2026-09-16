@@ -63,7 +63,33 @@ GeometryTileWorker::GeometryTileWorker(OptionalActorRef<GeometryTileWorker> self
 GeometryTileWorker::~GeometryTileWorker() {
     MLN_TRACE_FUNC();
 
+    retireTiming(layouttiming::Disposition::Destroyed);
     scheduler.runOnRenderThread([renderData_{std::move(renderData)}]() {});
+}
+
+GeometryTileWorker::TimingHandler::TimingHandler(GeometryTileWorker& value) noexcept
+  : worker(value), active(value.layoutTiming.active())
+{
+  if (active) worker.layoutTiming.enter(tiletrace::now());
+}
+
+GeometryTileWorker::TimingHandler::~TimingHandler()
+{
+  if (!active || !worker.layoutTiming.active()) return;
+  const bool pending = worker.hasPendingDependencies();
+  const auto gap = !worker.data || !worker.layers ? layouttiming::Gap::Inputs
+    : worker.state != Idle ? layouttiming::Gap::Coalescing
+    : worker.hasPendingParseResult() && pending ? layouttiming::Gap::Dependencies : layouttiming::Gap::Idle;
+  worker.layoutTiming.leave(tiletrace::now(), gap, static_cast<unsigned>(worker.state), pending);
+  if (worker.layoutTiming.terminalReason() != layouttiming::Disposition::None)
+    worker.retireTiming(worker.layoutTiming.terminalReason());
+}
+
+void GeometryTileWorker::retireTiming(layouttiming::Disposition reason) noexcept
+{
+  if (!layoutTiming.active()) return;
+  const auto trace = data && *data ? (*data)->trace : tiletrace::Context{};
+  layouttiming::publish(trace, layoutTiming.finish(tiletrace::now()), reason);
 }
 
 /*
@@ -140,6 +166,16 @@ GeometryTileWorker::~GeometryTileWorker() {
 void GeometryTileWorker::setData(std::unique_ptr<const GeometryTileData> data_,
                                  std::set<std::string> availableImages_,
                                  uint64_t correlationID_) {
+    setDataTraced(std::move(data_), std::move(availableImages_), correlationID_, {});
+}
+
+void GeometryTileWorker::setDataTraced(std::unique_ptr<const GeometryTileData> data_,
+                                      std::set<std::string> availableImages_,
+                                      uint64_t correlationID_, layouttiming::Seed seed) {
+    const auto received = seed.generation ? tiletrace::now() : 0;
+    retireTiming(layouttiming::Disposition::Replaced);
+    layoutTiming.start(seed, received);
+    TimingHandler timingHandler(*this);
     MLN_TRACE_FUNC();
 
     try {
@@ -160,6 +196,7 @@ void GeometryTileWorker::setData(std::unique_ptr<const GeometryTileData> data_,
                 break;
         }
     } catch (...) {
+        layoutTiming.terminate(layouttiming::Disposition::Error);
         parent.invoke(&GeometryTile::onError, std::current_exception(), correlationID);
     }
 }
@@ -169,6 +206,7 @@ void GeometryTileWorker::setLayers(std::vector<Immutable<LayerProperties>> layer
                                    const float paintZoomBias_,
                                    const bool useLineWidthZoomCoveringStops_,
                                    uint64_t correlationID_) {
+    TimingHandler timingHandler(*this);
     MLN_TRACE_FUNC();
 
     try {
@@ -193,11 +231,13 @@ void GeometryTileWorker::setLayers(std::vector<Immutable<LayerProperties>> layer
                 break;
         }
     } catch (...) {
+        layoutTiming.terminate(layouttiming::Disposition::Error);
         parent.invoke(&GeometryTile::onError, std::current_exception(), correlationID);
     }
 }
 
 void GeometryTileWorker::reset(uint64_t correlationID_) {
+    retireTiming(layouttiming::Disposition::Reset);
     layers = std::nullopt;
     data = std::nullopt;
     correlationID = correlationID_;
@@ -214,6 +254,7 @@ void GeometryTileWorker::reset(uint64_t correlationID_) {
 }
 
 void GeometryTileWorker::setShowCollisionBoxes(bool showCollisionBoxes_, uint64_t correlationID_) {
+    TimingHandler timingHandler(*this);
     MLN_TRACE_FUNC();
 
     try {
@@ -239,6 +280,7 @@ void GeometryTileWorker::setShowCollisionBoxes(bool showCollisionBoxes_, uint64_
                 break;
         }
     } catch (...) {
+        layoutTiming.terminate(layouttiming::Disposition::Error);
         parent.invoke(&GeometryTile::onError, std::current_exception(), correlationID);
     }
 }
@@ -269,11 +311,13 @@ void GeometryTileWorker::symbolDependenciesChanged() {
                 break;
         }
     } catch (...) {
+        layoutTiming.terminate(layouttiming::Disposition::Error);
         parent.invoke(&GeometryTile::onError, std::current_exception(), correlationID);
     }
 }
 
 void GeometryTileWorker::coalesced() {
+    TimingHandler timingHandler(*this);
     MLN_TRACE_FUNC();
 
     try {
@@ -300,6 +344,7 @@ void GeometryTileWorker::coalesced() {
                 break;
         }
     } catch (...) {
+        layoutTiming.terminate(layouttiming::Disposition::Error);
         parent.invoke(&GeometryTile::onError, std::current_exception(), correlationID);
     }
 }
@@ -312,6 +357,12 @@ void GeometryTileWorker::coalesce() {
 }
 
 void GeometryTileWorker::onGlyphsAvailable(GlyphMap newGlyphMap, HBShapeResults results) {
+    TimingHandler timingHandler(*this);
+    onGlyphsAvailableImpl(std::move(newGlyphMap), std::move(results));
+}
+
+void GeometryTileWorker::onGlyphsAvailableImpl(GlyphMap newGlyphMap, HBShapeResults results) {
+    layouttiming::WorkScope callbackWork(layoutTiming, layouttiming::Phase::Callback);
     MLN_TRACE_FUNC();
 
     for (auto& newFontGlyphs : newGlyphMap) {
@@ -363,6 +414,7 @@ void GeometryTileWorker::onGlyphsAvailable(GlyphMap newGlyphMap, HBShapeResults 
         }
     }
 
+    callbackWork.finish();
     symbolDependenciesChanged();
 }
 
@@ -370,6 +422,13 @@ void GeometryTileWorker::onImagesAvailable(ImageMap newIconMap,
                                            ImageMap newPatternMap,
                                            ImageVersionMap newVersionMap,
                                            uint64_t imageCorrelationID_) {
+    TimingHandler timingHandler(*this);
+    onImagesAvailableImpl(std::move(newIconMap), std::move(newPatternMap), std::move(newVersionMap), imageCorrelationID_);
+}
+
+void GeometryTileWorker::onImagesAvailableImpl(ImageMap newIconMap, ImageMap newPatternMap,
+                                              ImageVersionMap newVersionMap, uint64_t imageCorrelationID_) {
+    layouttiming::WorkScope callbackWork(layoutTiming, layouttiming::Phase::Callback);
     MLN_TRACE_FUNC();
 
     if (imageCorrelationID != imageCorrelationID_) {
@@ -379,6 +438,7 @@ void GeometryTileWorker::onImagesAvailable(ImageMap newIconMap,
     patternMap = std::move(newPatternMap);
     versionMap = std::move(newVersionMap);
     pendingImageDependencies.clear();
+    callbackWork.finish();
     symbolDependenciesChanged();
 }
 
@@ -429,6 +489,8 @@ void GeometryTileWorker::parse() {
         return;
     }
 
+    layouttiming::WorkScope parseWork(layoutTiming, layouttiming::Phase::Parse);
+
     // The layouts created below check the symbols they build; report through the tile's observer,
     // called on this worker thread.
     const ErrorScope errorScope{observer};
@@ -456,6 +518,7 @@ void GeometryTileWorker::parse() {
     for (auto& pair : groupMap) {
         const auto& group = pair.second;
         if (obsolete) {
+            layoutTiming.terminate(layouttiming::Disposition::Obsolete);
             return;
         }
 
@@ -476,6 +539,11 @@ void GeometryTileWorker::parse() {
         if (!geometryLayer) {
             continue;
         }
+
+        std::optional<layouttiming::GroupScope> groupTiming;
+        if (layoutTiming.active())
+          groupTiming.emplace(layoutTiming, leaderImpl.id, geometryLayer->featureCount(),
+                              leaderImpl.getTypeInfo()->layout == LayerTypeInfo::Layout::Required);
 
         std::vector<std::string> layerIDs;
         layerIDs.reserve(group.size());
@@ -539,6 +607,7 @@ void GeometryTileWorker::parse() {
                                    << " SourceID: " << sourceID.c_str()
                                    << " Canonical: " << static_cast<int>(id.canonical.z) << "/" << id.canonical.x << "/"
                                    << id.canonical.y << " Time");
+    parseWork.finish();
     finalizeLayout();
 }
 
@@ -562,6 +631,8 @@ void GeometryTileWorker::finalizeLayout() {
         return;
     }
 
+    layouttiming::WorkScope finalizeWork(layoutTiming, layouttiming::Phase::Finalize);
+
     // The layouts check the symbols they build below; report through the tile's observer,
     // called on this worker thread.
     const ErrorScope errorScope{observer};
@@ -579,6 +650,7 @@ void GeometryTileWorker::finalizeLayout() {
 
         for (auto& layout : layouts) {
             if (obsolete) {
+                layoutTiming.terminate(layouttiming::Disposition::Obsolete);
                 dynamicTextureAtlas->removeTextures(glyphAtlas.textureHandles, glyphAtlas.dynamicTexture);
                 dynamicTextureAtlas->removeTextures(imageAtlas.textureHandles, imageAtlas.dynamicTexture);
                 return;
@@ -617,6 +689,8 @@ void GeometryTileWorker::finalizeLayout() {
         result->trace.kind = tiletrace::Kind::Layout;
         result->trace.generation = result->trace.id;
     }
+    finalizeWork.finish();
+    if (layoutTiming.active()) result->timing = layoutTiming.result(tiletrace::now());
     parent.invoke(&GeometryTile::onLayout, std::move(result), correlationID);
 }
 

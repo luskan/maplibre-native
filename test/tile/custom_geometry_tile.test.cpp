@@ -26,6 +26,7 @@
 #include <mln/style/native_tile_request_state.hpp>
 #include <mln/tile/native_geometry_tile_data.hpp>
 #include <mln/util/rapidjson.hpp>
+#include <mln/util/layout_timing.hpp>
 #include <mln/util/scoped.hpp>
 #include <mln/annotation/annotation_manager.hpp>
 #include <mln/renderer/image_manager.hpp>
@@ -652,6 +653,9 @@ TEST(CustomGeometryTile, DestructorRemovesOnlyItsOwnRegistration) {
 TEST(CustomGeometryTile, MemoSurvivesDeferredPatternAndSymbolLayoutAndQueries) {
   std::vector<Feature> baselineQuery;
   for (bool memoize : {false, true}) {
+    tiletrace::configure(true, true);
+    layouttiming::configure(true, true);
+    Scoped timingCleanup([] { layouttiming::configure(false, true); tiletrace::configure(false, true); });
     auto backend = gfx::HeadlessBackend::Create();
     gfx::BackendScope backendScope{*backend->getRendererBackend()};
     CustomTileTest test;
@@ -695,7 +699,8 @@ TEST(CustomGeometryTile, MemoSurvivesDeferredPatternAndSymbolLayoutAndQueries) {
     features.back().properties["name"] = std::string("polygon");
     features.emplace_back(mapbox::geometry::point<double>{0, 0});
     features.back().properties["name"] = std::string("point");
-    tile.setTileData(CustomGeometryTile::processTileData(features, CanonicalTileID(0, 0, 0), {}));
+    auto trace = tiletrace::create(1, 2, 3, 0, 0, 0, 0, 0);
+    tile.setTracedTileData(CustomGeometryTile::processTileData(features, CanonicalTileID(0, 0, 0), {}), trace);
     ASSERT_TRUE(test.waitUntil([&] { return images.completions.size() == 2; }));
     EXPECT_FALSE(tile.isComplete());
     test.imageManager->addImage(makeMutable<style::Image::Impl>("pattern", PremultipliedImage({16, 16}), 1.0f));
@@ -705,6 +710,19 @@ TEST(CustomGeometryTile, MemoSurvivesDeferredPatternAndSymbolLayoutAndQueries) {
     test.imageManager->notifyIfMissingImageAdded();
     ASSERT_TRUE(test.waitUntil([&] { return tile.isComplete(); }));
     ASSERT_TRUE(tile.isRenderable());
+    rapidjson::Document timingSnapshot;
+    timingSnapshot.Parse(layouttiming::snapshotJSON(tiletrace::session()).c_str());
+    ASSERT_EQ(1u, timingSnapshot["records"].Size());
+    const auto& timing = timingSnapshot["records"][0];
+    EXPECT_STREQ("accepted", timing["disposition"].GetString());
+    EXPECT_TRUE(timing["valid"].GetBool());
+    EXPECT_GT(std::stoull(timing["work"]["callback"]["calls"].GetString()), 0u);
+    uint64_t measured = 0;
+    for (const auto* section : {"work", "gaps"})
+      for (const auto& item : timing[section].GetObject())
+        measured += std::stoull(item.value["wallUs"].GetString());
+    EXPECT_LE(measured, std::stoull(timing["resultPostedUs"].GetString())
+                       - std::stoull(timing["workerReceivedUs"].GetString()));
     auto firstLayer = tile.getData()->getLayer("fill");
     auto secondLayer = tile.getData()->getLayer("symbol");
     auto firstFeature = firstLayer->getFeature(0);
@@ -912,6 +930,108 @@ std::shared_ptr<GeometryTile::LayoutResult> emptyLayout()
 }
 
 } // namespace
+
+TEST(CustomGeometryTile, NativeLayoutTimingFollowsAcceptedWorkerResult)
+{
+  tiletrace::configure(true, true);
+  layouttiming::configure(true, true);
+  Scoped cleanup([] { layouttiming::configure(false, true); tiletrace::configure(false, true); });
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  auto trace = tiletrace::create(1, 2, receiver.token, 0, 0, 0, 0, 0, 2, 0,
+                                 tiletrace::PayloadFormat::NativeGeometry);
+  test.loader.fetchTracedTile(id, receiver.actor, receiver.token, trace);
+  ASSERT_EQ(1u, test.requests.size());
+  trace.id = trace.publication = tiletrace::nextID();
+  trace.kind = tiletrace::Kind::Publication;
+  trace.payloadSession = trace.session;
+  tiletrace::mark(trace, tiletrace::Producer);
+  tiletrace::mark(trace, tiletrace::Worker);
+  tiletrace::mark(trace, tiletrace::Features);
+  test.loader.setTracedTilePayload(id.canonical, test.requests.back(), test.payload(id.canonical), trace);
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  rapidjson::Document snapshot;
+  snapshot.Parse(layouttiming::snapshotJSON(tiletrace::session()).c_str());
+  ASSERT_FALSE(snapshot.HasParseError());
+  ASSERT_TRUE(snapshot["available"].GetBool());
+  const auto& records = snapshot["records"];
+  ASSERT_EQ(1u, records.Size());
+  const auto& result = records[0];
+  EXPECT_STREQ("accepted", result["disposition"].GetString());
+  EXPECT_TRUE(result["valid"].GetBool());
+  EXPECT_EQ(std::to_string(trace.publication), result["publication"].GetString());
+  EXPECT_EQ(std::to_string(receiver.token), result["consumer"].GetString());
+  EXPECT_STRNE("0", result["layoutId"].GetString());
+  EXPECT_STREQ(result["resultCorrelation"].GetString(), result["ownerCorrelation"].GetString());
+  const char* times[] = {"deliveredUs", "ownerQueuedUs", "workerReceivedUs", "resultPostedUs",
+                         "ownerReceivedUs", "ownerAcceptedUs"};
+  uint64_t previous = 0;
+  for (const auto* name : times)
+  {
+    const auto value = std::stoull(result[name].GetString());
+    EXPECT_GT(value, 0u);
+    EXPECT_GE(value, previous);
+    previous = value;
+  }
+  EXPECT_STREQ("1", result["work"]["parse"]["calls"].GetString());
+  EXPECT_STREQ("1", result["work"]["finalize"]["calls"].GetString());
+  ASSERT_EQ(1u, result["topGroups"].Size());
+  EXPECT_STREQ("circle", result["topGroups"][0]["name"].GetString());
+  layouttiming::configure(false);
+  unsigned changed = 0;
+  receiver.observer.tileChanged = [&](const Tile&) { ++changed; };
+  CircleLayer updated("updated-circle", "source");
+  receiver.tile->setLayers({makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(updated.baseImpl))});
+  ASSERT_TRUE(test.waitUntil([&] { return changed > 0; }));
+  snapshot.Parse(layouttiming::snapshotJSON(tiletrace::session()).c_str());
+  EXPECT_EQ(1u, snapshot["records"].Size());
+  EXPECT_FALSE(snapshot["enabled"].GetBool());
+  EXPECT_STREQ("0", snapshot["stale"].GetString());
+}
+
+TEST(CustomGeometryTile, NativeLayoutTimingDisabledKeepsNormalCompletion)
+{
+  tiletrace::configure(true, true);
+  layouttiming::configure(false, true);
+  Scoped cleanup([] { tiletrace::configure(false, true); });
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  auto trace = tiletrace::create(1, 2, receiver.token, 0, 0, 0, 0, 0);
+  test.loader.fetchTracedTile(id, receiver.actor, receiver.token, trace);
+  test.loader.setTracedTilePayload(id.canonical, test.requests.back(), test.payload(id.canonical), trace);
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  rapidjson::Document snapshot;
+  snapshot.Parse(layouttiming::snapshotJSON(tiletrace::session()).c_str());
+  EXPECT_FALSE(snapshot["enabled"].GetBool());
+  EXPECT_TRUE(snapshot["records"].Empty());
+}
+
+TEST(CustomGeometryTile, NativeLayoutTimingKeepsOwnerRejectionSeparate)
+{
+  tiletrace::configure(true, true);
+  layouttiming::configure(true, true);
+  Scoped cleanup([] { layouttiming::configure(false, true); tiletrace::configure(false, true); });
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  auto trace = tiletrace::create(1, 2, receiver.token, 0, 0, 0, 0, 0);
+  tiletrace::mark(trace, tiletrace::Delivered);
+  layouttiming::Tracker timing;
+  timing.start(layouttiming::makeSeed(trace, 0), tiletrace::now());
+  auto result = emptyLayout();
+  result->trace = trace;
+  result->trace.kind = tiletrace::Kind::Layout;
+  result->timing = timing.result(tiletrace::now());
+  receiver.tile->onLayout(std::move(result), 0);
+  rapidjson::Document snapshot;
+  snapshot.Parse(layouttiming::snapshotJSON(tiletrace::session()).c_str());
+  ASSERT_EQ(1u, snapshot["records"].Size());
+  EXPECT_STREQ("correlation-rejected", snapshot["records"][0]["disposition"].GetString());
+  EXPECT_STREQ("0", snapshot["records"][0]["ownerAcceptedUs"].GetString());
+  EXPECT_FALSE(receiver.tile->isComplete());
+}
 
 TEST(CustomGeometryTile, NativeCacheSharesPayloadAcrossWrappedAndOverscaledReceivers)
 {

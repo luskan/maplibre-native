@@ -13,6 +13,7 @@
 #include <mln/renderer/render_layer.hpp>
 #include <mln/tile/tile.hpp>
 #include <mln/util/containers.hpp>
+#include <mln/util/layout_timing.hpp>
 
 #include <atomic>
 #include <memory>
@@ -60,6 +61,9 @@ public:
     void setData(std::unique_ptr<const GeometryTileData>,
                  std::set<std::string> availableImages,
                  uint64_t correlationID);
+    void setDataTraced(std::unique_ptr<const GeometryTileData>,
+                       std::set<std::string> availableImages, uint64_t correlationID,
+                       layouttiming::Seed);
     void reset(uint64_t correlationID_);
     void setShowCollisionBoxes(bool showCollisionBoxes_, uint64_t correlationID_);
 
@@ -71,6 +75,18 @@ public:
                            uint64_t imageCorrelationID);
 
 private:
+    struct TimingHandler
+    {
+      GeometryTileWorker& worker;
+      bool active;
+      explicit TimingHandler(GeometryTileWorker&) noexcept;
+      ~TimingHandler();
+    };
+    layouttiming::Tracker layoutTiming;
+    void retireTiming(layouttiming::Disposition) noexcept;
+    void onGlyphsAvailableImpl(GlyphMap, HBShapeResults);
+    void onImagesAvailableImpl(ImageMap, ImageMap, ImageVersionMap, uint64_t);
+
     void coalesced();
     void parse();
     void finalizeLayout();

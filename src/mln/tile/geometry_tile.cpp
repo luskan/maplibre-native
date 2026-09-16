@@ -272,8 +272,14 @@ void GeometryTile::setData(std::unique_ptr<const GeometryTileData> data_) {
     }
     tileTraceInput = data_ ? data_->trace : tiletrace::Context{};
     ++correlationID;
-    worker.self().invoke(
-        &GeometryTileWorker::setData, std::move(data_), imageManager->getAvailableImages(), correlationID);
+    if (layouttiming::enabled() && data_ && data_->trace.id) {
+        auto images = imageManager->getAvailableImages();
+        const auto seed = layouttiming::makeSeed(data_->trace, correlationID);
+        worker.self().invoke(&GeometryTileWorker::setDataTraced, std::move(data_), std::move(images), correlationID, seed);
+    } else {
+        worker.self().invoke(
+            &GeometryTileWorker::setData, std::move(data_), imageManager->getAvailableImages(), correlationID);
+    }
 }
 
 void GeometryTile::reset() {
@@ -362,17 +368,28 @@ void GeometryTile::setShowCollisionBoxes(const bool showCollisionBoxes_) {
 void GeometryTile::onLayout(std::shared_ptr<LayoutResult>&& result, const uint64_t resultCorrelationID) {
     MLN_TRACE_FUNC();
 
+    const auto timingReceived = result && result->timing.seed.generation ? tiletrace::now() : 0;
     if (resultCorrelationID != correlationID) {
-        if (result) tiletrace::finish(result->trace, tiletrace::Outcome::Superseded);
+        if (result) {
+            tiletrace::finish(result->trace, tiletrace::Outcome::Superseded);
+            layouttiming::publish(result->trace, result->timing, layouttiming::Disposition::CorrelationRejected,
+                                  timingReceived, correlationID, resultCorrelationID);
+        }
         return;
     }
     if (!acceptsPendingDataResult()) {
-        if (result) tiletrace::finish(result->trace, tiletrace::Outcome::StaleWorker);
+        if (result) {
+            tiletrace::finish(result->trace, tiletrace::Outcome::StaleWorker);
+            layouttiming::publish(result->trace, result->timing, layouttiming::Disposition::InputRejected,
+                                  timingReceived, correlationID, resultCorrelationID);
+        }
         return;
     }
 
     if (result) {
         tiletrace::mark(result->trace, tiletrace::Layout);
+        layouttiming::publish(result->trace, result->timing, layouttiming::Disposition::Accepted,
+                              timingReceived, correlationID, resultCorrelationID);
         if (tileTraceLayers) {
             const bool noDraw = std::none_of(tileTraceLayers->begin(), tileTraceLayers->end(), [&](const auto& layer) {
                 const auto found = result->layerRenderData.find(layer);
