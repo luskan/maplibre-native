@@ -50,6 +50,9 @@ public:
 
 protected:
     bool acceptsPendingDataResult() const override;
+    RenderOptimizationPolicy renderOptimizationPolicy() const override;
+    void optimizationPending(bool error = false) override;
+    void optimizationAccepted(RenderOptimizationPolicy) override;
 
 private:
     bool acceptsNativeTicket(const NativeRequestTicket&) const;

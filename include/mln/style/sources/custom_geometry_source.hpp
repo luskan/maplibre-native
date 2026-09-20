@@ -20,6 +20,7 @@ class ThreadPool;
 class GeometryMemoObserver;
 class NativeTilePayload;
 class NativeRequestState;
+class RenderOptimizationState;
 
 namespace style {
 
@@ -51,6 +52,7 @@ public:
         bool memoizeGeometry = false;
         std::shared_ptr<GeometryMemoObserver> geometryMemoObserver = nullptr;
         TileDataType dataType = TileDataType::LegacyFeatures;
+        std::shared_ptr<RenderOptimizationState> renderOptimizations;
     };
 
     struct Options {

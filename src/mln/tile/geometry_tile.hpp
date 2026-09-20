@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mln/util/render_optimization.hpp>
+
 #include <mln/actor/optional_actor.hpp>
 #include <mln/geometry/feature_index.hpp>
 #include <mln/gfx/dynamic_texture_atlas.hpp>
@@ -71,6 +73,7 @@ public:
     public:
         tiletrace::Context trace;
         layouttiming::Profile timing;
+        RenderOptimizationPolicy optimizations;
         mln::unordered_map<std::string, LayerRenderData> layerRenderData;
         std::shared_ptr<FeatureIndex> featureIndex;
         gfx::GlyphAtlas glyphAtlas;
@@ -108,6 +111,9 @@ public:
 
 protected:
     virtual bool acceptsPendingDataResult() const { return true; }
+    virtual RenderOptimizationPolicy renderOptimizationPolicy() const { return {}; }
+    virtual void optimizationPending(bool = false) {}
+    virtual void optimizationAccepted(RenderOptimizationPolicy) {}
     void setPendingDataError(std::exception_ptr, tiletrace::Context);
     const GeometryTileData* getData() const;
     const tiletrace::Context* retainedTraceForDiagnostics() const {

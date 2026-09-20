@@ -53,6 +53,7 @@ CustomGeometryTile::CustomGeometryTile(const OverscaledTileID& overscaledTileID,
 }
 
 CustomGeometryTile::~CustomGeometryTile() {
+    if (options->renderOptimizations) options->renderOptimizations->remove(registrationToken);
     tiletrace::finish(traceDemand, tiletrace::Outcome::Teardown);
     mailbox->close();  // Prevent messages from being delivered to destroyed tile (UAF fix)
     loader.invoke(&style::CustomTileLoader::removeTile, id, registrationToken);
@@ -134,6 +135,20 @@ bool CustomGeometryTile::acceptsPendingDataResult() const {
     return !nativeInputValidity || nativeInputValidity->isCurrent();
 }
 
+RenderOptimizationPolicy CustomGeometryTile::renderOptimizationPolicy() const {
+    if (options->dataType != style::CustomGeometrySource::TileDataType::NativeGeometry
+        || !options->renderOptimizations || !options->renderOptimizations->enabled.load()) return {};
+    return RenderOptimizationPolicy::requested();
+}
+
+void CustomGeometryTile::optimizationPending(bool error) {
+    if (options->renderOptimizations) options->renderOptimizations->pending(registrationToken, error);
+}
+
+void CustomGeometryTile::optimizationAccepted(RenderOptimizationPolicy policy) {
+    if (options->renderOptimizations) options->renderOptimizations->accept(registrationToken, policy);
+}
+
 void CustomGeometryTile::setNativeTileData(NativeTilePayloadPtr payload, NativeRequestTicket ticket,
                                          tiletrace::Context trace) {
     trace.payloadFormat = tiletrace::PayloadFormat::NativeGeometry;
@@ -169,6 +184,7 @@ void CustomGeometryTile::setNativeTileError(NativeRequestTicket ticket, std::exc
 }
 
 void CustomGeometryTile::invalidateTileData() {
+    optimizationPending();
     stale = true;
     observer->onTileChanged(*this);
 }
@@ -179,6 +195,8 @@ void CustomGeometryTile::invalidateTileData() {
 void CustomGeometryTile::setNecessity(TileNecessity newNecessity) {
     if (newNecessity != necessity || stale) {
         necessity = newNecessity;
+        if (options->renderOptimizations)
+            options->renderOptimizations->necessity(registrationToken, necessity == TileNecessity::Required);
         if (necessity == TileNecessity::Required) {
             tiletrace::finish(traceDemand, tiletrace::Outcome::Superseded);
             traceDemand = tiletrace::create(options->traceMap, options->traceSource, registrationToken,

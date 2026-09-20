@@ -790,6 +790,7 @@ void GeometryTileWorker::finalizeLayout() {
     }
     paintStatistics.finish();
     finalizeWork.finish();
+    result->optimizations = {selectionPolicy, paintPolicy};
     if (layoutTiming.active()) result->timing = layoutTiming.result(tiletrace::now());
     parent.invoke(&GeometryTile::onLayout, std::move(result), correlationID);
 }

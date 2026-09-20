@@ -88,6 +88,8 @@ public:
         poll.start(Milliseconds(1), Milliseconds(1), [&] {
             if (complete()) {
                 loop.stop();
+                // A second queued stop would make the next wait return early.
+                poll.stop();
             }
         });
         loop.run();
@@ -883,6 +885,7 @@ public:
   using GeometryTile::setData;
   const GeometryTileData* data() const { return getData(); }
   bool acceptsResult() const { return acceptsPendingDataResult(); }
+  RenderOptimizationPolicy optimizationPolicy() const { return renderOptimizationPolicy(); }
 };
 
 class NativeTileTest : public CustomTileTest
@@ -1753,6 +1756,7 @@ TEST(CustomGeometryTile, CandidatePolicyPinsTracedAndUntracedDeliveriesAndSurviv
         tiletrace::configure(false, true);
       });
       NativeTileTest test;
+      test.options.renderOptimizations = std::make_shared<RenderOptimizationState>();
       const OverscaledTileID id(0, 0, 0);
       NativeTileTest::Receiver receiver(test, id);
       CircleLayer first("first", "source"), second("second", "source");
@@ -1850,6 +1854,10 @@ TEST(CustomGeometryTile, PaintMemoSurvivesDeferredLinePatternAndPolicyChange)
     {
       using CustomGeometryTile::CustomGeometryTile;
       using GeometryTile::getLayerRenderData;
+      RenderOptimizationPolicy renderOptimizationPolicy() const override
+      {
+        return RenderOptimizationPolicy::requested();
+      }
     } tile(OverscaledTileID(0, 0, 0), "source", test.tileParameters,
            makeMutable<CustomGeometrySource::TileOptions>(), loaderActor);
     LineLayer line("line", "source");
@@ -1905,4 +1913,66 @@ TEST(CustomGeometryTile, PaintMemoSurvivesDeferredLinePatternAndPolicyChange)
     EXPECT_EQ(2u, queried.size());
     EXPECT_EQ(nullptr, paintmemo::current());
   }
+}
+
+TEST(CustomGeometryTile, NativeOptimizationStatusWorksWithoutCaptureAndRejectsOldGenerations)
+{
+  tiletrace::configure(false, true);
+  layouttiming::configure(false, true);
+  featureselection::configure(1);
+  paintmemo::configure(1);
+  Scoped restore([] { featureselection::configure(0); paintmemo::configure(0); });
+  NativeTileTest test;
+  auto state = std::make_shared<RenderOptimizationState>();
+  test.options.renderOptimizations = state;
+  const OverscaledTileID id(0, 0, 0);
+  {
+    NativeTileTest::Receiver receiver(test, id);
+    receiver.tile->setNecessity(TileNecessity::Required);
+    ASSERT_TRUE(test.waitUntil([&] { return test.requests.size() == 1; }));
+    EXPECT_FALSE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+    test.publish(id.canonical, test.requests.back(), test.payload(id.canonical));
+    ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+    EXPECT_TRUE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+    receiver.tile->setNecessity(TileNecessity::Optional);
+    EXPECT_EQ(0u, state->snapshot(RenderOptimizationPolicy::requested()).required);
+    receiver.tile->setNecessity(TileNecessity::Required);
+    EXPECT_TRUE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+    featureselection::configure(0);
+    paintmemo::configure(0);
+    featureselection::configure(1);
+    paintmemo::configure(1);
+    EXPECT_FALSE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+    receiver.tile->onLayout(emptyLayout(), std::numeric_limits<uint64_t>::max());
+    EXPECT_FALSE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+    featureselection::configure(0);
+    paintmemo::configure(0);
+    receiver.tile->setData(std::make_unique<NativeGeometryTileData>(test.payload(id.canonical)));
+    ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+    EXPECT_TRUE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+    receiver.tile->invalidateTileData();
+    EXPECT_FALSE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+  }
+  EXPECT_EQ(0u, state->snapshot(RenderOptimizationPolicy::requested()).required);
+  EXPECT_FALSE(state->snapshot(RenderOptimizationPolicy::requested()).active());
+}
+
+TEST(CustomGeometryTile, OptimizationPolicyRequiresNativeSourceOptInAndEnabledMode)
+{
+  featureselection::configure(1);
+  paintmemo::configure(1);
+  Scoped restore([] { featureselection::configure(0); paintmemo::configure(0); });
+  NativeTileTest test;
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver noOptIn(test, id);
+  EXPECT_TRUE(noOptIn.tile->optimizationPolicy() == RenderOptimizationPolicy{});
+  test.options.renderOptimizations = std::make_shared<RenderOptimizationState>();
+  NativeTileTest::Receiver optedIn(test, id);
+  EXPECT_TRUE(optedIn.tile->optimizationPolicy() == RenderOptimizationPolicy::requested());
+  test.options.renderOptimizations->enabled.store(false);
+  EXPECT_TRUE(optedIn.tile->optimizationPolicy() == RenderOptimizationPolicy{});
+  test.options.renderOptimizations->enabled.store(true);
+  test.options.dataType = CustomGeometrySource::TileDataType::LegacyFeatures;
+  NativeTileTest::Receiver legacy(test, id);
+  EXPECT_TRUE(legacy.tile->optimizationPolicy() == RenderOptimizationPolicy{});
 }

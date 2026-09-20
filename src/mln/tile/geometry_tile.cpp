@@ -272,16 +272,18 @@ void GeometryTile::setData(std::unique_ptr<const GeometryTileData> data_) {
     }
     tileTraceInput = data_ ? data_->trace : tiletrace::Context{};
     ++correlationID;
-    const auto selectionPolicy = featureselection::policy();
+    const auto optimizationPolicy = renderOptimizationPolicy();
+    optimizationPending();
     auto images = imageManager->getAvailableImages();
     const auto seed = layouttiming::enabled() && data_ && data_->trace.id
       ? layouttiming::makeSeed(data_->trace, correlationID) : layouttiming::Seed{};
     worker.self().invoke(&GeometryTileWorker::setDataSelected, std::move(data_), std::move(images),
-                        correlationID, seed, selectionPolicy, paintmemo::policy());
+                        correlationID, seed, optimizationPolicy.selection, optimizationPolicy.paint);
 }
 
 void GeometryTile::reset() {
     MLN_TRACE_FUNC();
+    optimizationPending();
 
     // If there is pending work, indicate that work has been cancelled.
     // Clear the pending status.
@@ -413,6 +415,7 @@ void GeometryTile::onLayout(std::shared_ptr<LayoutResult>&& result, const uint64
     const ErrorScope errorScope{observer};
 
     layoutResult = std::move(result);
+    if (layoutResult) optimizationAccepted(layoutResult->optimizations);
     if (!atlasTextures) {
         atlasTextures = std::make_shared<TileAtlasTextures>();
     }
@@ -458,6 +461,7 @@ void GeometryTile::setPendingDataError(std::exception_ptr err, tiletrace::Contex
 }
 
 void GeometryTile::applyDataError(std::exception_ptr err, tiletrace::Context failed) {
+    optimizationPending(true);
     if (failed.id) {
         failed.id = tiletrace::nextID();
         failed.kind = tiletrace::Kind::Layout;
