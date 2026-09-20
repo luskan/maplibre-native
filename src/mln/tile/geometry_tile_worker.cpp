@@ -31,6 +31,28 @@ namespace mln {
 
 using namespace style;
 
+namespace {
+class SelectionStatisticsScope
+{
+public:
+  SelectionStatisticsScope(layouttiming::Tracker& tracker_, featureselection::Policy policy) : tracker(tracker_)
+  {
+    value.applied = policy;
+    value.parses = 1;
+  }
+  ~SelectionStatisticsScope() { finish(); }
+  void finish()
+  {
+    if (pending) tracker.addSelection(value);
+    pending = false;
+  }
+  featureselection::Statistics value;
+private:
+  layouttiming::Tracker& tracker;
+  bool pending = true;
+};
+} // namespace
+
 GeometryTileWorker::GeometryTileWorker(OptionalActorRef<GeometryTileWorker> self_,
                                        OptionalActorRef<GeometryTile> parent_,
                                        const TaggedScheduler& scheduler_,
@@ -172,9 +194,17 @@ void GeometryTileWorker::setData(std::unique_ptr<const GeometryTileData> data_,
 void GeometryTileWorker::setDataTraced(std::unique_ptr<const GeometryTileData> data_,
                                       std::set<std::string> availableImages_,
                                       uint64_t correlationID_, layouttiming::Seed seed) {
+    setDataSelected(std::move(data_), std::move(availableImages_), correlationID_, seed, {});
+}
+
+void GeometryTileWorker::setDataSelected(std::unique_ptr<const GeometryTileData> data_,
+                                        std::set<std::string> availableImages_, uint64_t correlationID_,
+                                        layouttiming::Seed seed, featureselection::Policy policy) {
     const auto received = seed.generation ? tiletrace::now() : 0;
     retireTiming(layouttiming::Disposition::Replaced);
     layoutTiming.start(seed, received);
+    selectionPolicy = policy;
+    layoutTiming.selectionPolicy(policy);
     TimingHandler timingHandler(*this);
     MLN_TRACE_FUNC();
 
@@ -409,6 +439,8 @@ void GeometryTileWorker::onGlyphsAvailableImpl(GlyphMap newGlyphMap, HBShapeResu
 
         for (auto& layout : layouts) {
             if (layout && layout->needFinalizeSymbols()) {
+                layouttiming::GroupWorkScope timing(layoutTiming, layout->timingKey,
+                                                    layouttiming::GroupPhase::DeferredCallback);
                 layout->finalizeSymbols(results);
             }
         }
@@ -490,6 +522,7 @@ void GeometryTileWorker::parse() {
     }
 
     layouttiming::WorkScope parseWork(layoutTiming, layouttiming::Phase::Parse);
+    SelectionStatisticsScope candidateStatistics(layoutTiming, selectionPolicy);
 
     // The layouts created below check the symbols they build; report through the tile's observer,
     // called on this worker thread.
@@ -514,6 +547,18 @@ void GeometryTileWorker::parse() {
 
     // Create render layers and group by layout
     GroupMap groupMap = groupLayers(*layers);
+    std::unique_ptr<FeatureSelection> selection;
+    if (*data && selectionPolicy.mode != featureselection::Mode::FullScan)
+    {
+        try
+        {
+            std::vector<const Filter*> filters;
+            filters.reserve(groupMap.size());
+            for (const auto& entry : groupMap) filters.push_back(&entry.second.front()->baseImpl->filter);
+            selection = (*data)->createFeatureSelection(filters, candidateStatistics.value, layoutTiming.active());
+        }
+        catch (const std::bad_alloc&) { ++candidateStatistics.value.limitFallbacks; }
+    }
 
     for (auto& pair : groupMap) {
         const auto& group = pair.second;
@@ -560,34 +605,58 @@ void GeometryTileWorker::parse() {
         // images/glyphs are used, or the Layout is stored until the
         // images/glyphs are available to add the features to the buckets.
         if (leaderImpl.getTypeInfo()->layout == LayerTypeInfo::Layout::Required) {
-            std::unique_ptr<Layout> layout = LayerManager::get()->createLayout({.bucketParameters = parameters,
+            std::unique_ptr<Layout> layout;
+            {
+                layouttiming::GroupWorkScope selectionWork(layoutTiming, groupTiming
+                  ? groupTiming->phase(layouttiming::GroupPhase::Selection) : nullptr);
+                layout = LayerManager::get()->createLayout({.bucketParameters = parameters,
                                                                                 .fontFaces = fontFaces,
                                                                                 .glyphDependencies = glyphDependencies,
                                                                                 .imageDependencies = imageDependencies,
-                                                                                .availableImages = availableImages},
+                                                                                .availableImages = availableImages,
+                                                                                .timingCounts = groupTiming ? groupTiming->counts() : nullptr,
+                                                                                .featureSelection = selection.get(),
+                                                                                .selectionStatistics = &candidateStatistics.value},
                                                                                std::move(geometryLayer),
                                                                                group);
+            }
             if (layout->hasDependencies()) {
+                if (groupTiming) {
+                    groupTiming->deferBucket();
+                    layout->timingKey = groupTiming->key();
+                }
                 layouts.push_back(std::move(layout));
             } else {
+                layouttiming::GroupWorkScope bucket(layoutTiming, groupTiming
+                  ? groupTiming->phase(layouttiming::GroupPhase::Bucket) : nullptr);
                 layout->createBucket({}, featureIndex, renderData, firstLoad, showCollisionBoxes, id.canonical);
             }
         } else {
+            layouttiming::GroupWorkScope interleaved(layoutTiming, groupTiming
+              ? groupTiming->phase(layouttiming::GroupPhase::Interleaved) : nullptr);
             const Filter& filter = leaderImpl.filter;
             const std::string& sourceLayerID = leaderImpl.sourceLayer;
             std::shared_ptr<Bucket> bucket = LayerManager::get()->createBucket(parameters, group);
 
-            for (std::size_t i = 0; !obsolete && i < geometryLayer->featureCount(); i++) {
+            uint64_t matchedFeatures = 0;
+            const auto candidates = selectFeatureCandidates(selection.get(), geometryLayer->featureCount(), filter,
+              expression::EvaluationContext(static_cast<float>(id.overscaledZ)).withCanonicalTileID(&id.canonical),
+              &candidateStatistics.value);
+            std::size_t examined = 0;
+            for (; !obsolete && examined < candidates.size(); ++examined) {
+                const auto i = candidates[examined];
                 std::unique_ptr<GeometryTileFeature> feature = geometryLayer->getFeature(i);
 
                 if (!filter(expression::EvaluationContext(static_cast<float>(this->id.overscaledZ), feature.get())
                                 .withCanonicalTileID(&id.canonical)))
                     continue;
 
+                if (groupTiming) ++matchedFeatures;
                 const GeometryCollection& geometries = feature->getGeometries();
                 bucket->addFeature(*feature, geometries, {}, PatternLayerMap(), i, id.canonical);
                 featureIndex->insert(geometries, i, sourceLayerID, leaderImpl.id);
             }
+            if (groupTiming) *groupTiming->counts() = {examined, matchedFeatures, !obsolete};
 
             if (!bucket->hasData()) {
                 continue;
@@ -607,6 +676,8 @@ void GeometryTileWorker::parse() {
                                    << " SourceID: " << sourceID.c_str()
                                    << " Canonical: " << static_cast<int>(id.canonical.z) << "/" << id.canonical.x << "/"
                                    << id.canonical.y << " Time");
+    selection.reset();
+    candidateStatistics.finish();
     parseWork.finish();
     finalizeLayout();
 }
@@ -656,13 +727,19 @@ void GeometryTileWorker::finalizeLayout() {
                 return;
             }
 
-            layout->prepareSymbols(glyphMap, glyphAtlas.glyphPositions, iconMap, imageAtlas.iconPositions);
+            {
+                layouttiming::GroupWorkScope preparation(layoutTiming, layout->timingKey,
+                                                        layouttiming::GroupPhase::DeferredPreparation);
+                layout->prepareSymbols(glyphMap, glyphAtlas.glyphPositions, iconMap, imageAtlas.iconPositions);
+            }
 
             if (!layout->hasSymbolInstances()) {
                 continue;
             }
 
             // layout adds the bucket to buckets
+            layouttiming::GroupWorkScope bucket(layoutTiming, layout->timingKey,
+                                               layouttiming::GroupPhase::DeferredBucket);
             layout->createBucket(
                 imageAtlas.patternPositions, featureIndex, renderData, firstLoad, showCollisionBoxes, id.canonical);
         }

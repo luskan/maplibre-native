@@ -13,7 +13,7 @@ void dump(const char* label)
 
 int main()
 {
-  static_assert(sizeof(l::Profile) < 2048);
+  static_assert(sizeof(l::Profile) < 4096);
   t::setTestTime(100);
   t::configure(true, true);
   auto trace = t::create(1, 2, 3, 10, 571, 337, 10, 0, 2);
@@ -92,6 +92,46 @@ int main()
   accepted.id = accepted.generation = t::nextID();
   l::publish(accepted, tracker.result(300), l::Disposition::Accepted, 310, 4, 4);
   dump("groups");
+
+  tracker.start(seed, 200); tracker.enter(200);
+  std::array<l::GroupKey, 12> keys;
+  for (unsigned i = 0; i < keys.size(); ++i)
+  {
+    keys[i] = tracker.groupKey();
+    l::Group part;
+    part.ordinal = keys[i].ordinal;
+    part.parseOrdinal = keys[i].parseOrdinal;
+    part.features = 100;
+    part.counts = {100, 25, true};
+    part.layoutRequired = true;
+    part.bucketDeferred = i == 0;
+    part.work = {80 + i, 70 + i, 1, true};
+    part.phases[0] = {20, 15, 1, true};
+    if (i) part.phases[1] = {50, 45, 1, true};
+    tracker.addGroup(part);
+  }
+  tracker.add(l::Phase::Parse, {200, 0, true}, {2000, 1500, true});
+  tracker.addDeferred(keys[0], l::GroupPhase::DeferredPreparation, {2010, 1510, true}, {2100, 1590, true});
+  tracker.addDeferred(keys[11], l::GroupPhase::DeferredBucket, {2100, 1590, true}, {2140, 1630, true});
+  tracker.add(l::Phase::Finalize, {2000, 1500, true}, {2150, 1640, true});
+  const auto split = tracker.result(2160);
+  accepted.id = accepted.generation = t::nextID();
+  accepted.time[t::Layout] = 2200;
+  l::publish(accepted, split, l::Disposition::Accepted, 2190, 4, 4);
+  dump("split");
+  tracker.add(l::Phase::Parse, {2220, 1640, true}, {2250, 1670, true});
+  assert(!tracker.acceptsDeferred(keys[0]));
+  { l::GroupWorkScope rejected(tracker, keys[0], l::GroupPhase::DeferredBucket); }
+  assert(split.groupTotals.rejectedDeferred == 0);
+  auto stale = tracker.result(2310);
+  accepted.id = accepted.generation = t::nextID();
+  accepted.time[t::Layout] = 2340;
+  l::publish(accepted, stale, l::Disposition::Accepted, 2330, 4, 4);
+  dump("split_reparse");
+  auto replacement = seed;
+  ++replacement.inputId;
+  tracker.start(replacement, 200);
+  assert(!tracker.acceptsDeferred(keys[0]));
 
   l::configure(true, true);
   auto current = first;

@@ -22,7 +22,9 @@ std::unique_ptr<Layout> CircleLayerFactory::createLayout(const LayoutParameters&
                                                          std::unique_ptr<GeometryTileLayer> layer,
                                                          const std::vector<Immutable<style::LayerProperties>>& group) {
     return std::unique_ptr<Layout>(new (std::nothrow)
-                                       CircleLayout(parameters.bucketParameters, group, std::move(layer)));
+                                       CircleLayout(parameters.bucketParameters, group, std::move(layer),
+                                                    parameters.timingCounts, parameters.featureSelection,
+                                                    parameters.selectionStatistics));
 }
 
 std::unique_ptr<RenderLayer> CircleLayerFactory::createRenderLayer(Immutable<style::Layer::Impl> impl) noexcept {

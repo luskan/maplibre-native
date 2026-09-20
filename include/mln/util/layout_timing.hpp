@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mln/util/tile_trace.hpp>
+#include <mln/util/feature_selection.hpp>
 
 #include <array>
 #include <cstdint>
@@ -12,6 +13,7 @@ namespace mln::layouttiming {
 
 enum class Phase : uint8_t { Parse, Finalize, Callback, Count };
 enum class Gap : uint8_t { Inputs, Coalescing, Dependencies, Idle, Count };
+enum class GroupPhase : uint8_t { Selection, Bucket, Interleaved, DeferredPreparation, DeferredBucket, DeferredCallback, Count };
 enum class Disposition : uint8_t
 {
   Accepted, CorrelationRejected, InputRejected, Replaced, Reset, Error, Obsolete, Destroyed, None
@@ -35,12 +37,34 @@ struct GapMeasure
   uint32_t stateMask = 0;
 };
 
+struct FeatureCounts
+{
+  uint64_t examined = 0, matched = 0;
+  bool available = false;
+};
+
+struct GroupKey
+{
+  uint64_t inputId = 0, generation = 0, captureGeneration = 0, parseOrdinal = 0, ordinal = 0;
+};
+
+using GroupWork = std::array<Measure, static_cast<size_t>(GroupPhase::Count)>;
+
 struct Group
 {
   std::array<char, 80> name{};
-  uint64_t parseOrdinal = 0, features = 0;
+  uint64_t parseOrdinal = 0, ordinal = 0, features = 0;
   Measure work;
-  bool nameTruncated = false, layoutRequired = false;
+  GroupWork phases{};
+  FeatureCounts counts;
+  bool nameTruncated = false, layoutRequired = false, bucketDeferred = false;
+};
+
+struct GroupTotals
+{
+  GroupWork phases{};
+  uint64_t inputFeatures = 0, examined = 0, matched = 0;
+  uint64_t countedGroups = 0, uncountedGroups = 0, deferredGroups = 0, rejectedDeferred = 0;
 };
 
 struct Seed
@@ -57,6 +81,8 @@ struct Profile
   std::array<Measure, static_cast<size_t>(Phase::Count)> work{};
   std::array<GapMeasure, static_cast<size_t>(Gap::Count)> gaps{};
   std::array<Group, 8> groups{};
+  GroupTotals groupTotals;
+  featureselection::Statistics candidates;
   size_t groupCount = 0;
   bool valid = true;
 };
@@ -77,7 +103,14 @@ public:
   void enter(uint64_t at) noexcept;
   void leave(uint64_t at, Gap, unsigned state, bool pending) noexcept;
   void add(Phase, Stamp start, Stamp end) noexcept;
+  void measure(Measure&, Stamp start, Stamp end) noexcept;
   void addGroup(Group) noexcept;
+  void selectionPolicy(featureselection::Policy policy) noexcept { value.candidates.applied = policy; }
+  void addSelection(const featureselection::Statistics&) noexcept;
+  GroupKey groupKey() const noexcept;
+  bool acceptsDeferred(const GroupKey&) const noexcept;
+  bool beginDeferred(const GroupKey&) noexcept;
+  void addDeferred(const GroupKey&, GroupPhase, Stamp start, Stamp end) noexcept;
   void invalidate() noexcept { value.valid = false; }
   uint64_t nextParseOrdinal() const noexcept { return value.work[0].calls + 1; }
   void terminate(Disposition reason) noexcept { terminal = reason; }
@@ -118,11 +151,33 @@ public:
   ~GroupScope();
   GroupScope(const GroupScope&) = delete;
   GroupScope& operator=(const GroupScope&) = delete;
+  GroupKey key() const noexcept { return identity; }
+  FeatureCounts* counts() noexcept { return &group.counts; }
+  Measure* phase(GroupPhase which) noexcept { return &group.phases[static_cast<size_t>(which)]; }
+  void deferBucket() noexcept { group.bucketDeferred = true; }
 
 private:
   Tracker* tracker;
   Stamp start;
   Group group;
+  GroupKey identity;
+};
+
+class GroupWorkScope
+{
+public:
+  GroupWorkScope(Tracker&, Measure*) noexcept;
+  GroupWorkScope(Tracker&, GroupKey, GroupPhase) noexcept;
+  ~GroupWorkScope();
+  GroupWorkScope(const GroupWorkScope&) = delete;
+  GroupWorkScope& operator=(const GroupWorkScope&) = delete;
+
+private:
+  Tracker* tracker;
+  Measure* measure = nullptr;
+  GroupKey key;
+  GroupPhase phase = GroupPhase::Selection;
+  Stamp start;
 };
 
 } // namespace mln::layouttiming

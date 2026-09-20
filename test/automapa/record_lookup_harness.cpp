@@ -183,6 +183,15 @@ int main()
   first.z = first.overscaledZ = 10; first.x = 4; first.y = 5;
   mark(first, Request); checkIndex();
   layout = accepted(first, first.generation);
+  for (size_t i = 0; i < Capacity; ++i)
+    if (!collector().records[i].context.id)
+    {
+      auto filler = layout;
+      filler.id = filler.generation = 700 * Capacity + i;
+      filler.publication = 0;
+      mark(filler, Layout);
+    }
+  checkIndex();
   {
     FrameScope scope(2); draw(layout, false);
     auto collision = first; collision.id = collision.demand = layout.id + Capacity;

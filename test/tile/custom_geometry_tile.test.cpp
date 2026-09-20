@@ -19,6 +19,7 @@
 #include <mln/style/layers/symbol_layer.hpp>
 #include <mln/style/layers/symbol_layer_impl.hpp>
 #include <mln/style/image_impl.hpp>
+#include <mln/style/expression/dsl.hpp>
 #include <mln/test/geometry_memo_observer.hpp>
 #include <mln/tile/geojson_tile_data.hpp>
 #include <mln/style/sources/custom_geometry_source_impl.hpp>
@@ -683,8 +684,16 @@ TEST(CustomGeometryTile, MemoSurvivesDeferredPatternAndSymbolLayoutAndQueries) {
     } tile(OverscaledTileID(0, 0, 0), "source-a", test.tileParameters,
            std::move(options), loaderActor);
     FillLayer fill("fill", "source-a");
+    Filter fillFilter;
+    fillFilter.expression = std::shared_ptr<const expression::Expression>(
+      expression::dsl::createExpression(R"(["==",["get","name"],"polygon"])"));
+    fill.setFilter(fillFilter);
     fill.setFillPattern(expression::Image("pattern"));
     SymbolLayer symbol("symbol", "source-a");
+    Filter symbolFilter;
+    symbolFilter.expression = std::shared_ptr<const expression::Expression>(
+      expression::dsl::createExpression(R"(["==",["get","name"],"point"])"));
+    symbol.setFilter(symbolFilter);
     symbol.setIconImage(expression::Image("icon"));
     auto fillMutable = makeMutable<FillLayerProperties>(
       staticImmutableCast<FillLayer::Impl>(fill.baseImpl));
@@ -717,6 +726,20 @@ TEST(CustomGeometryTile, MemoSurvivesDeferredPatternAndSymbolLayoutAndQueries) {
     EXPECT_STREQ("accepted", timing["disposition"].GetString());
     EXPECT_TRUE(timing["valid"].GetBool());
     EXPECT_GT(std::stoull(timing["work"]["callback"]["calls"].GetString()), 0u);
+    const auto& split = timing["groupSplit"];
+    EXPECT_STREQ("4", split["inputFeatures"].GetString());
+    EXPECT_STREQ("4", split["examined"].GetString());
+    EXPECT_STREQ("2", split["matched"].GetString());
+    EXPECT_STREQ("2", split["countedGroups"].GetString());
+    EXPECT_STREQ("0", split["uncountedGroups"].GetString());
+    EXPECT_STREQ("2", split["deferredGroups"].GetString());
+    EXPECT_STREQ("0", split["rejectedDeferred"].GetString());
+    EXPECT_STREQ("2", split["work"]["selection"]["calls"].GetString());
+    EXPECT_STREQ("0", split["work"]["bucket"]["calls"].GetString());
+    EXPECT_STREQ("2", split["work"]["deferredBucket"]["calls"].GetString());
+    EXPECT_LE(std::stoull(split["work"]["deferredPreparation"]["wallUs"].GetString())
+              + std::stoull(split["work"]["deferredBucket"]["wallUs"].GetString()),
+              std::stoull(timing["work"]["finalize"]["wallUs"].GetString()));
     uint64_t measured = 0;
     for (const auto* section : {"work", "gaps"})
       for (const auto& item : timing[section].GetObject())
@@ -854,6 +877,7 @@ class InspectableCustomTile : public CustomGeometryTile
 {
 public:
   using CustomGeometryTile::CustomGeometryTile;
+  using GeometryTile::setData;
   const GeometryTileData* data() const { return getData(); }
   bool acceptsResult() const { return acceptsPendingDataResult(); }
 };
@@ -939,6 +963,12 @@ TEST(CustomGeometryTile, NativeLayoutTimingFollowsAcceptedWorkerResult)
   NativeTileTest test;
   const OverscaledTileID id(0, 0, 0);
   NativeTileTest::Receiver receiver(test, id);
+  CircleLayer filtered("circle", "source");
+  Filter filter;
+  filter.expression = std::shared_ptr<const expression::Expression>(
+    expression::dsl::createExpression(R"(["==",["get","name"],"native"])"));
+  filtered.setFilter(filter);
+  receiver.tile->setLayers({makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(filtered.baseImpl))});
   auto trace = tiletrace::create(1, 2, receiver.token, 0, 0, 0, 0, 0, 2, 0,
                                  tiletrace::PayloadFormat::NativeGeometry);
   test.loader.fetchTracedTile(id, receiver.actor, receiver.token, trace);
@@ -949,7 +979,10 @@ TEST(CustomGeometryTile, NativeLayoutTimingFollowsAcceptedWorkerResult)
   tiletrace::mark(trace, tiletrace::Producer);
   tiletrace::mark(trace, tiletrace::Worker);
   tiletrace::mark(trace, tiletrace::Features);
-  test.loader.setTracedTilePayload(id.canonical, test.requests.back(), test.payload(id.canonical), trace);
+  NativeTileBuilder builder({id.canonical, test.state->contract()});
+  builder.appendFinal(FeatureType::Point, {{{4096, 4096}}}, {{"name", "native"}}, uint64_t{7});
+  builder.appendFinal(FeatureType::Point, {{{1000, 1000}}}, {{"name", "excluded"}}, uint64_t{8});
+  test.loader.setTracedTilePayload(id.canonical, test.requests.back(), std::move(builder).seal(), trace);
   ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
   rapidjson::Document snapshot;
   snapshot.Parse(layouttiming::snapshotJSON(tiletrace::session()).c_str());
@@ -978,6 +1011,18 @@ TEST(CustomGeometryTile, NativeLayoutTimingFollowsAcceptedWorkerResult)
   EXPECT_STREQ("1", result["work"]["finalize"]["calls"].GetString());
   ASSERT_EQ(1u, result["topGroups"].Size());
   EXPECT_STREQ("circle", result["topGroups"][0]["name"].GetString());
+  const auto& split = result["groupSplit"];
+  EXPECT_STREQ("2", split["examined"].GetString());
+  EXPECT_STREQ("1", split["matched"].GetString());
+  EXPECT_STREQ("0", split["uncountedGroups"].GetString());
+  EXPECT_STREQ("1", split["work"]["selection"]["calls"].GetString());
+  EXPECT_STREQ("1", split["work"]["bucket"]["calls"].GetString());
+  EXPECT_LE(std::stoull(split["work"]["selection"]["wallUs"].GetString())
+            + std::stoull(split["work"]["bucket"]["wallUs"].GetString()),
+            std::stoull(result["work"]["parse"]["wallUs"].GetString()));
+  std::vector<Feature> queried;
+  receiver.tile->querySourceFeatures(queried, {});
+  EXPECT_EQ(2u, queried.size());
   layouttiming::configure(false);
   unsigned changed = 0;
   receiver.observer.tileChanged = [&](const Tile&) { ++changed; };
@@ -1658,4 +1703,90 @@ TEST(CustomGeometryTile, NativeLateProducerErrorDoesNotDiscardSuccessfulPendingL
       EXPECT_EQ(1u, errors);
     }
   }
+}
+
+namespace
+{
+class SelectionRecordingData : public GeometryTileData
+{
+public:
+  SelectionRecordingData(NativeTilePayloadPtr payload, std::shared_ptr<std::atomic<uint64_t>> seen_, bool fail_)
+    : data(std::move(payload)), seen(std::move(seen_)), fail(fail_) {}
+  std::unique_ptr<GeometryTileData> clone() const override { return data.clone(); }
+  std::unique_ptr<GeometryTileLayer> getLayer(const std::string& name) const override { return data.getLayer(name); }
+  std::unique_ptr<FeatureSelection> createFeatureSelection(const std::vector<const Filter*>& filters,
+    featureselection::Statistics& statistics, bool observe, const FeatureCandidateLimits& limits) const override
+  {
+    seen->store(statistics.applied.generation * 4 + static_cast<unsigned>(statistics.applied.mode));
+    if (fail) throw std::bad_alloc();
+    return data.createFeatureSelection(filters, statistics, observe, limits);
+  }
+private:
+  NativeGeometryTileData data;
+  std::shared_ptr<std::atomic<uint64_t>> seen;
+  bool fail;
+};
+}
+
+TEST(CustomGeometryTile, CandidatePolicyPinsTracedAndUntracedDeliveriesAndSurvivesAllocationFallback)
+{
+  for (bool traced : {false, true})
+    for (bool fail : {false, true})
+    {
+      tiletrace::configure(traced, true);
+      layouttiming::configure(traced, true);
+      Scoped cleanup([] {
+        featureselection::configure(0);
+        layouttiming::configure(false, true);
+        tiletrace::configure(false, true);
+      });
+      NativeTileTest test;
+      const OverscaledTileID id(0, 0, 0);
+      NativeTileTest::Receiver receiver(test, id);
+      CircleLayer first("first", "source"), second("second", "source");
+      Filter one, two;
+      one.expression = std::shared_ptr<const expression::Expression>(
+        expression::dsl::createExpression(R"(["==",["get","rc"],6])"));
+      two.expression = std::shared_ptr<const expression::Expression>(
+        expression::dsl::createExpression(R"(["==",["get","rc"],5])"));
+      first.setFilter(one); second.setFilter(two);
+      auto properties = std::vector<Immutable<LayerProperties>>{
+        makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(first.baseImpl)),
+        makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(second.baseImpl))};
+      receiver.tile->setLayers(properties);
+      NativeTileBuilder builder({id.canonical, test.state->contract()});
+      for (uint64_t value : {6u, 5u, 9u})
+        builder.appendFinal(FeatureType::Point, {{{4096, 4096}}}, {{"rc", int64_t(value)}}, value);
+      auto seen = std::make_shared<std::atomic<uint64_t>>(0);
+      auto data = std::make_unique<SelectionRecordingData>(std::move(builder).seal(), seen, fail);
+      data->trace = tiletrace::create(1, 2, receiver.token, 0, 0, 0, 0, 0);
+      tiletrace::mark(data->trace, tiletrace::Delivered);
+      featureselection::configure(2);
+      const auto pinned = featureselection::policy();
+      receiver.tile->setData(std::move(data));
+      featureselection::configure(0);
+      ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+      EXPECT_EQ(pinned.generation * 4 + 2, seen->load());
+      std::vector<Feature> queried;
+      receiver.tile->querySourceFeatures(queried, {});
+      EXPECT_EQ(3u, queried.size());
+      if (traced)
+      {
+        rapidjson::Document snapshot;
+        snapshot.Parse(layouttiming::snapshotJSON(tiletrace::session()).c_str());
+        const auto& candidate = snapshot["records"][0]["candidateSelection"];
+        EXPECT_EQ(2u, candidate["mode"].GetUint());
+        EXPECT_EQ(std::to_string(pinned.generation), candidate["generation"].GetString());
+        EXPECT_STREQ(fail ? "0" : "2", candidate["indexedGroups"].GetString());
+        EXPECT_STREQ(fail ? "0" : "2", candidate["verifiedGroups"].GetString());
+        EXPECT_STREQ(fail ? "1" : "0", candidate["limitFallbacks"].GetString());
+        EXPECT_STREQ("0", candidate["verificationFailures"].GetString());
+      }
+      seen->store(0);
+      unsigned changed = 0;
+      receiver.observer.tileChanged = [&](const Tile&) { ++changed; };
+      receiver.tile->setLayers(properties);
+      ASSERT_TRUE(test.waitUntil([&] { return changed > 0; }));
+      EXPECT_EQ(pinned.generation * 4 + 2, seen->load());
+    }
 }

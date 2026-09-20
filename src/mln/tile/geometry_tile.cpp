@@ -272,14 +272,12 @@ void GeometryTile::setData(std::unique_ptr<const GeometryTileData> data_) {
     }
     tileTraceInput = data_ ? data_->trace : tiletrace::Context{};
     ++correlationID;
-    if (layouttiming::enabled() && data_ && data_->trace.id) {
-        auto images = imageManager->getAvailableImages();
-        const auto seed = layouttiming::makeSeed(data_->trace, correlationID);
-        worker.self().invoke(&GeometryTileWorker::setDataTraced, std::move(data_), std::move(images), correlationID, seed);
-    } else {
-        worker.self().invoke(
-            &GeometryTileWorker::setData, std::move(data_), imageManager->getAvailableImages(), correlationID);
-    }
+    const auto selectionPolicy = featureselection::policy();
+    auto images = imageManager->getAvailableImages();
+    const auto seed = layouttiming::enabled() && data_ && data_->trace.id
+      ? layouttiming::makeSeed(data_->trace, correlationID) : layouttiming::Seed{};
+    worker.self().invoke(&GeometryTileWorker::setDataSelected, std::move(data_), std::move(images),
+                        correlationID, seed, selectionPolicy);
 }
 
 void GeometryTile::reset() {

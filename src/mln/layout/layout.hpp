@@ -5,6 +5,7 @@
 #include <mln/tile/geometry_tile_data.hpp>
 #include <mln/text/glyph_manager.hpp>
 #include <mln/util/containers.hpp>
+#include <mln/util/layout_timing.hpp>
 #include <memory>
 
 namespace mln {
@@ -18,6 +19,7 @@ class GlyphManager;
 
 class Layout {
 public:
+    layouttiming::GroupKey timingKey;
     virtual ~Layout() = default;
 
     virtual void createBucket(const ImagePositions&,
@@ -45,6 +47,9 @@ public:
     GlyphDependencies& glyphDependencies;
     ImageDependencies& imageDependencies;
     std::set<std::string>& availableImages;
+    layouttiming::FeatureCounts* timingCounts = nullptr;
+    FeatureSelection* featureSelection = nullptr;
+    featureselection::Statistics* selectionStatistics = nullptr;
 };
 
 } // namespace mln

@@ -95,11 +95,10 @@ class RecordLookupTest(unittest.TestCase):
     def test_swap_evicts_bucket_head_but_updates_surviving_receiver(self):
         rows = self.samples["indexed"]["semantic_primary_evicts_candidate"]["records"]
         survivor = next(r for r in rows if int(r["id"]) == 100 * 1024 + 100)
-        evicted = next(r for r in rows if int(r["id"]) == 401 * 1024 + 10)
         self.assertEqual(survivor["outcome"], "submitted")
         self.assertEqual(survivor["timesUs"][13], "3000")
-        self.assertNotEqual(evicted["outcome"], "submitted")
-        self.assertEqual(evicted["timesUs"][13], "0")
+        self.assertFalse(any(int(r["id"]) == 401 * 1024 + 10 for r in rows))
+        self.assertGreater(self.samples["indexed"]["semantic_primary_evicts_candidate"]["evicted"], 0)
 
     def test_full_capacity_copies_only_the_changed_batch(self):
         values = self.samples["indexed"]

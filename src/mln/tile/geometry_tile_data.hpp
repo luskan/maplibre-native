@@ -4,6 +4,7 @@
 #include <mln/util/feature.hpp>
 
 #include <mln/util/tile_trace.hpp>
+#include <mln/tile/feature_candidates.hpp>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -92,6 +93,9 @@ public:
     // Returns the layer with the given name. The returned layer object *may*
     // outlive the data object.
     virtual std::unique_ptr<GeometryTileLayer> getLayer(const std::string&) const = 0;
+    virtual std::unique_ptr<FeatureSelection> createFeatureSelection(
+        const std::vector<const style::Filter*>&, featureselection::Statistics&, bool,
+        const FeatureCandidateLimits& = {}) const;
 };
 
 // classifies an array of rings into polygons with outer rings and holes

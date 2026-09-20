@@ -95,6 +95,13 @@ template<class Callback> void contended(Callback callback)
   while (!held) std::this_thread::yield();
   callback(); done = true; holder.join();
 }
+void fillSwapQueue()
+{
+  Frame empty;
+  empty.id = nextID(); empty.session = session(); empty.captureGeneration = captureGeneration();
+  for (size_t i = 0; i < SwapQueueCapacity; ++i)
+    enqueueSwap(collector(), empty, true, eventBoundary());
+}
 void fillLossBank()
 {
   auto unrelated = create(3, 4, nextID(), 10, 1, 1, 10, 0);
@@ -150,7 +157,7 @@ int main()
     {
       at(4000); FrameScope scope(2); draw(accepted, false);
       at(5000); retire(b); at(7000);
-      contended([&] { swapBegin(99); swapEnd(true); });
+      contended([&] { fillSwapQueue(); swapBegin(99); swapEnd(true); });
     }
     dump(overflow ? "overflow_swap" : "delayed_swap_lost");
   }
@@ -170,7 +177,7 @@ int main()
         updateView(1, 2, 1, &A, 1);
         if (ordering == 2) { at(6000); draw(accepted, false); }
         if (reenter) { const ViewTile keys[]{A, B}; updateView(1, 2, 1, keys, 2); }
-        at(7000); contended([&] { swapBegin(99); swapEnd(true); });
+        at(7000); contended([&] { fillSwapQueue(); swapBegin(99); swapEnd(true); });
       }
       dump(ordering == 0 ? (reenter ? "departure_before_reentry" : "departure_before") :
            ordering == 1 ? (reenter ? "departure_equal_reentry" : "departure_equal") :
@@ -250,7 +257,7 @@ int main()
     Gate overlap;
     std::thread second([&] {
       at(4000); FrameScope later(2); draw(accepted, false); overlap.pause();
-      contended([&] { swapBegin(99); swapEnd(true); });
+      contended([&] { fillSwapQueue(); swapBegin(99); swapEnd(true); });
     });
     overlap.wait(); at(5000); swapBegin(99); swapEnd(true);
     at(6000); overlap.release(); second.join();

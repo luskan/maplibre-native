@@ -58,6 +58,26 @@ class LayoutTimingTests(unittest.TestCase):
     self.assertEqual(r['groupsSeen'],'12')
     self.assertEqual(sorted(int(g['work']['wallUs']) for g in r['topGroups']),list(range(5,13)))
 
+  def test_split_totals_cover_groups_outside_the_retained_eight(self):
+    r = self.samples['split']['records'][-1]
+    split = r['groupSplit']
+    self.assertEqual((split['inputFeatures'],split['examined'],split['matched']),('1200','1200','300'))
+    self.assertEqual((split['countedGroups'],split['uncountedGroups']),('12','0'))
+    self.assertEqual(split['work']['selection']['wallUs'],'240')
+    self.assertEqual(split['work']['bucket']['wallUs'],'550')
+    self.assertEqual(split['work']['deferredPreparation']['wallUs'],'90')
+    self.assertEqual(split['work']['deferredBucket']['wallUs'],'40')
+    self.assertEqual(sum(int(g['split']['work']['selection']['wallUs']) for g in r['topGroups']),160)
+    self.assertNotIn('1',[g['ordinal'] for g in r['topGroups']])
+    last = next(g for g in r['topGroups'] if g['ordinal']=='12')
+    self.assertEqual(last['split']['work']['deferredBucket']['wallUs'],'40')
+
+  def test_reparse_rejects_deferred_keys_without_changing_prior_result(self):
+    old = self.samples['split']['records'][-1]['groupSplit']
+    current = self.samples['split_reparse']['records'][-1]['groupSplit']
+    self.assertEqual((old['rejectedDeferred'],current['rejectedDeferred']),('0','1'))
+    self.assertEqual(current['work']['deferredBucket'],old['work']['deferredBucket'])
+
   def test_overwrite_and_contention_are_explicit(self):
     s = self.samples['bounded']
     self.assertEqual((s['sequence'],s['overwritten'],len(s['records'])),('129','1',128))

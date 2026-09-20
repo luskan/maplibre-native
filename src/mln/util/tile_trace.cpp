@@ -1,6 +1,7 @@
 #include <mln/util/tile_trace.hpp>
 #include <mln/util/layout_timing.hpp>
 #include <ctime>
+#include <memory>
 
 #include <algorithm>
 #include <atomic>
@@ -16,6 +17,22 @@
 #ifndef TILE_TRACE_TEST_COUNT
 #define TILE_TRACE_TEST_COUNT(point, value) ((void)0)
 #endif
+
+namespace mln::featureselection {
+namespace { std::atomic<uint64_t> selectionPolicy{0}; }
+Policy policy() noexcept
+{
+  const auto value = selectionPolicy.load();
+  return {static_cast<Mode>(value % 4), value / 4};
+}
+bool configure(unsigned mode) noexcept
+{
+  if (mode > 2) return false;
+  auto previous = selectionPolicy.load();
+  while (!selectionPolicy.compare_exchange_weak(previous, ((previous / 4) + 1) * 4 + mode)) {}
+  return true;
+}
+} // namespace mln::featureselection
 
 namespace mln::tiletrace {
 namespace {
@@ -36,6 +53,7 @@ struct Record
   uint64_t lossBaseline = 0;
   std::array<uint64_t, 2> contributionDraw{}, contributionSubmit{}, contributionGeneration{};
   uint64_t submittedDraw = 0;
+  ID observedOrder = 0, bindingOrder = 0, outcomeOrder = 0;
 };
 struct Activity
 {
@@ -61,7 +79,7 @@ struct BatchMember
   size_t useCount = 0;
   uint64_t lossBaseline = 0, viewGap = 0, cachedUs = 0, cacheEventUs = 0;
   uint64_t retiredUs = 0, failedUs = 0, admittedUs = 0;
-  ID retirementOrder = 0, failureOrder = 0;
+  ID retirementOrder = 0, failureOrder = 0, admissionOrder = 0;
   Retirement retirement = Retirement::None;
   Outcome failure = Outcome::Pending;
   ViewTile tile;
@@ -159,9 +177,133 @@ struct RecordIndex
     }
   }
 };
+enum class LossReason : size_t
+{
+  RecordStoreLock, ActivityLock, BindDemandLock, BindDemandMissing, RetireSourceLock,
+  RetainedDrawLock, SwapSurfaceLock, SwapRecordsLock, SurfaceCreateLock, SurfaceCapacity,
+  SurfaceDestroyLock, BatchMemberCapacity, BatchUseCapacity, Explicit,
+  BatchCache, BatchScreen, BatchOutcome, BatchView, RecordQueueFull, RecordQueueContention, RecordPending, SwapQueueFull, SwapQueueContention, SwapReplayOrder, Count
+};
+constexpr size_t LossReasonCount = static_cast<size_t>(LossReason::Count);
+constexpr std::array<const char*, LossReasonCount> LossReasonNames{{
+  "record-store-lock", "activity-lock", "bind-demand-lock", "bind-demand-missing", "retire-source-lock",
+  "retained-draw-lock", "swap-surface-lock", "swap-records-lock", "surface-create-lock", "surface-capacity",
+  "surface-destroy-lock", "batch-member-capacity", "batch-use-capacity", "explicit",
+  "batch-cache", "batch-screen", "batch-outcome", "batch-view",
+  "record-queue-full", "record-queue-contention", "record-history-pending", "swap-queue-full", "swap-queue-contention", "swap-replay-order"
+}};
+enum class ScreenLossSite : size_t
+{
+  Unspecified, FinishDemandLock, BindDemandLock, BindDemandCapacity, DrawCapacity,
+  DrawViewLock, SwapSubmitLock, NoDrawLayoutLock, Count
+};
+constexpr size_t ScreenLossSiteCount = static_cast<size_t>(ScreenLossSite::Count);
+constexpr std::array<const char*, ScreenLossSiteCount> ScreenLossSiteNames{{
+  "unspecified", "finish-demand-lock", "bind-demand-lock", "bind-demand-capacity",
+  "draw-capacity", "draw-view-lock", "swap-submit-lock", "no-draw-layout-lock"
+}};
+struct ScreenLossInfo
+{
+  ScreenLossSite site = ScreenLossSite::Unspecified;
+  const Context* context = nullptr;
+  uint64_t count = 0, limit = 0, evidenceUs = 0;
+  ID evidenceOrder = 0;
+};
+struct FirstScreenLoss
+{
+  ScreenLossSite site = ScreenLossSite::Unspecified;
+  bool contextAvailable = false;
+  Context context;
+  ID epoch = 0, collectorEpoch = 0, evidenceOrder = 0;
+  uint64_t ordinal = 0, detectedUs = 0, evidenceUs = 0, count = 0, limit = 0;
+};
+struct LossDiagnostics
+{
+  std::atomic<uint64_t> active{0}, revision{0};
+  std::array<std::atomic<uint64_t>, LossReasonCount> counts{}, foreignEpoch{}, unknownEpoch{}, snapshotOverlap{};
+  std::atomic<bool> snapshotCopyActive{false};
+  std::array<std::atomic<uint64_t>, ScreenLossSiteCount> screenSites{};
+  std::atomic<int> firstScreenState{0};
+  FirstScreenLoss firstScreen;
+};
+struct Frame
+{
+  ID id = 0, session = 0, surface = 0;
+  uint64_t ended = 0, swapStarted = 0, captureGeneration = 0;
+  int mode = 0;
+  bool swapped = false;
+  size_t count = 0;
+  std::array<Record, FrameCapacity> draws{};
+};
+constexpr size_t SwapQueueCapacity = 8;
+struct PendingSwap
+{
+  std::atomic<uint64_t> sequence{0};
+  Frame frame;
+  uint64_t submittedUs = 0, lossBaseline = 0;
+  ID order = 0;
+  bool success = false;
+  int error = 0;
+};
+struct SwapQueue
+{
+  std::array<PendingSwap, SwapQueueCapacity> entries;
+  std::atomic<uint64_t> reserved{0}, consumed{0}, active{0}, revision{0}, rejected{0}, contended{0};
+  uint64_t applied = 0, discarded = 0, lastTime = 0;
+  ID lastOrder = 0;
+  size_t drawCursor = 0;
+  SwapQueue()
+  {
+    for (size_t i = 0; i < entries.size(); ++i) entries[i].sequence.store(i);
+  }
+};
+struct SwapMutation
+{
+  SwapQueue& queue;
+  explicit SwapMutation(SwapQueue& value) : queue(value) { ++queue.active; }
+  ~SwapMutation() { ++queue.revision; --queue.active; }
+};
+struct SwapCut
+{
+  uint64_t revision;
+  bool empty;
+  explicit SwapCut(const SwapQueue& queue)
+    : revision(queue.revision.load()), empty(!queue.active.load() && queue.reserved.load() == queue.consumed.load()) {}
+  bool unchanged(const SwapQueue& queue) const
+  {
+    return empty && !queue.active.load() && queue.reserved.load() == queue.consumed.load()
+      && revision == queue.revision.load();
+  }
+};
+constexpr size_t RecordQueueCapacity = 64;
+struct PendingRecord
+{
+  std::atomic<uint64_t> sequence{0};
+  Context context;
+  uint64_t lossBaseline = 0, observedUs = 0;
+  ID observedOrder = 0;
+};
+struct RecordQueue
+{
+  std::array<PendingRecord, RecordQueueCapacity> entries;
+  std::atomic<uint64_t> reserved{0}, active{0}, revision{0}, rejected{0}, contended{0};
+  uint64_t consumed = 0, applied = 0, discarded = 0;
+  RecordQueue()
+  {
+    for (size_t i = 0; i < entries.size(); ++i) entries[i].sequence.store(i);
+  }
+};
+struct RecordProducer
+{
+  RecordQueue& queue;
+  explicit RecordProducer(RecordQueue& value) : queue(value) { ++queue.active; }
+  ~RecordProducer() { ++queue.revision; --queue.active; }
+  RecordProducer(const RecordProducer&) = delete;
+  RecordProducer& operator=(const RecordProducer&) = delete;
+};
 struct Collector
 {
-  std::mutex mutex, batchMutex, snapshotMutex;
+  std::mutex mutex, batchMutex, snapshotMutex, surfaceMutex;
   struct Published
   {
     std::atomic<int> readers{0};
@@ -176,6 +318,10 @@ struct Collector
   std::atomic<uint64_t> captureGeneration{1};
   std::atomic<ID> viewLossStart{0};
   std::atomic<uint64_t> lost{0}, gaps{0}, viewChanges{1};
+  LossDiagnostics lossDiagnostics;
+  RecordQueue recordQueue;
+  SwapQueue swapQueue;
+  std::atomic<ID> rejectedSwapEpoch{0};
   std::atomic<uint64_t> memoryStatsTime{0}, diskStatsTime{0};
   uint64_t evicted = 0, started = 0;
   ID retiredThrough = 0;
@@ -205,6 +351,125 @@ Collector& collector()
 {
   static Collector value;
   return value;
+}
+struct LossMutation
+{
+  LossDiagnostics& diagnostics;
+  bool active;
+  explicit LossMutation(Collector& c, bool enabled = true) : diagnostics(c.lossDiagnostics), active(enabled)
+  {
+    if (active) ++diagnostics.active;
+  }
+  ~LossMutation()
+  {
+    if (active) { ++diagnostics.revision; --diagnostics.active; }
+  }
+  LossMutation(const LossMutation&) = delete;
+  LossMutation& operator=(const LossMutation&) = delete;
+};
+void noteLoss(LossReason reason, ID epoch = 0, bool recordLock = false, ScreenLossInfo screen = {}) noexcept
+{
+  auto& c = collector();
+  LossMutation change(c);
+  ++c.lost;
+  const auto index = static_cast<size_t>(reason);
+  auto& diagnostics = c.lossDiagnostics;
+  const auto ordinal = diagnostics.counts[index].fetch_add(1) + 1;
+  const auto detectedEpoch = c.epoch.load();
+  if (!epoch) ++diagnostics.unknownEpoch[index];
+  else if (epoch != detectedEpoch) ++diagnostics.foreignEpoch[index];
+  if (recordLock && diagnostics.snapshotCopyActive.load()) ++diagnostics.snapshotOverlap[index];
+  if (reason == LossReason::BatchScreen)
+  {
+    const auto detectedUs = now();
+    ++diagnostics.screenSites[static_cast<size_t>(screen.site)];
+    TILE_TRACE_TEST_HOOK("screen_site_counted");
+    int empty = 0;
+    if (diagnostics.firstScreenState.compare_exchange_strong(empty, 1))
+    {
+      TILE_TRACE_TEST_HOOK("first_screen_claimed");
+      auto& event = diagnostics.firstScreen;
+      event.site = screen.site;
+      event.contextAvailable = screen.context != nullptr;
+      if (screen.context) event.context = *screen.context;
+      event.epoch = epoch; event.collectorEpoch = detectedEpoch;
+      event.ordinal = ordinal; event.detectedUs = detectedUs;
+      event.evidenceUs = screen.evidenceUs; event.evidenceOrder = screen.evidenceOrder;
+      event.count = screen.count; event.limit = screen.limit;
+      diagnostics.firstScreenState.store(2, std::memory_order_release);
+    }
+  }
+  TILE_TRACE_TEST_HOOK("loss_diagnostic_write");
+}
+std::string lossDiagnosticsJSON(ID exportedSession, uint64_t exportedLost, bool recordsComplete = true)
+{
+  auto& c = collector();
+  auto& diagnostics = c.lossDiagnostics;
+  const auto start = now();
+  const auto revision = diagnostics.revision.load();
+  const auto active = diagnostics.active.load();
+  const auto epoch = c.epoch.load();
+  const auto lost = c.lost.load();
+  std::array<std::array<uint64_t, LossReasonCount>, 4> values;
+  for (size_t i = 0; i < LossReasonCount; ++i)
+  {
+    values[0][i] = diagnostics.counts[i].load();
+    values[1][i] = diagnostics.foreignEpoch[i].load();
+    values[2][i] = diagnostics.unknownEpoch[i].load();
+    values[3][i] = diagnostics.snapshotOverlap[i].load();
+  }
+  std::array<uint64_t, ScreenLossSiteCount> screenSites;
+  for (size_t i = 0; i < screenSites.size(); ++i) screenSites[i] = diagnostics.screenSites[i].load();
+  const auto firstScreenState = diagnostics.firstScreenState.load(std::memory_order_acquire);
+  FirstScreenLoss firstScreen;
+  if (firstScreenState == 2) firstScreen = diagnostics.firstScreen;
+  TILE_TRACE_TEST_HOOK("loss_diagnostic_read");
+  const auto consistent = recordsComplete && !active && !diagnostics.active.load() && revision == diagnostics.revision.load()
+    && epoch == c.epoch.load() && lost == c.lost.load() && epoch == exportedSession && lost == exportedLost;
+  const auto end = now();
+  std::ostringstream out;
+  out << "{\"version\":1,\"available\":" << (consistent ? "true" : "false")
+      << ",\"session\":\"" << epoch << "\",\"aggregateLost\":" << lost
+      << ",\"sampleStartUs\":\"" << start << "\",\"sampleEndUs\":\"" << end << "\"";
+  constexpr std::array<const char*, 4> names{{"lifetimeCounts", "foreignEpochCounts",
+                                            "unknownEpochCounts", "snapshotOverlapCounts"}};
+  for (size_t group = 0; group < values.size(); ++group)
+  {
+    out << ",\"" << names[group] << "\":{";
+    for (size_t i = 0; i < LossReasonCount; ++i)
+      out << (i ? "," : "") << '"' << LossReasonNames[i] << "\":\"" << values[group][i] << '"';
+    out << '}';
+  }
+  out << ",\"batchScreen\":{\"version\":1,\"lifetimeCounts\":{";
+  for (size_t i = 0; i < screenSites.size(); ++i)
+    out << (i ? "," : "") << '"' << ScreenLossSiteNames[i] << "\":\"" << screenSites[i] << '"';
+  out << "},\"firstEventState\":\"" << (firstScreenState == 2 ? "ready" : firstScreenState ? "writing" : "empty")
+      << "\",\"firstRecordedEvent\":";
+  if (firstScreenState != 2) out << "null";
+  else
+  {
+    out << "{\"site\":\"" << ScreenLossSiteNames[static_cast<size_t>(firstScreen.site)]
+        << "\",\"epoch\":\"" << firstScreen.epoch << "\",\"collectorEpoch\":\"" << firstScreen.collectorEpoch
+        << "\",\"ordinal\":\"" << firstScreen.ordinal << "\",\"detectedUs\":\"" << firstScreen.detectedUs
+        << "\",\"evidenceUs\":\"" << firstScreen.evidenceUs << "\",\"evidenceOrder\":\"" << firstScreen.evidenceOrder
+        << "\",\"count\":" << firstScreen.count << ",\"limit\":" << firstScreen.limit << ",\"context\":";
+    if (!firstScreen.contextAvailable) out << "null";
+    else
+    {
+      const auto& ctx = firstScreen.context;
+      out << "{\"epoch\":\"" << ctx.session << "\",\"map\":\"" << ctx.map << "\",\"source\":\"" << ctx.source
+          << "\",\"id\":\"" << ctx.id << "\",\"publication\":\"" << ctx.publication
+          << "\",\"demand\":\"" << ctx.demand << "\",\"generation\":\"" << ctx.generation
+          << "\",\"consumer\":\"" << ctx.consumer << "\",\"view\":\"" << ctx.view
+          << "\",\"z\":" << unsigned(ctx.z) << ",\"x\":" << ctx.x << ",\"y\":" << ctx.y
+          << ",\"overscaledZ\":" << unsigned(ctx.overscaledZ) << ",\"wrap\":" << ctx.wrap
+          << ",\"kind\":" << unsigned(ctx.kind) << ",\"role\":" << unsigned(ctx.role)
+          << ",\"outcome\":" << unsigned(ctx.outcome) << '}';
+    }
+    out << '}';
+  }
+  out << "}}";
+  return out.str();
 }
 enum class LostEvent { Cache, Screen, Outcome, View };
 struct EventBoundary
@@ -332,9 +597,13 @@ LossBank::Source* sourceSlot(LossBank& bank, ID key, bool create)
   }
   return nullptr;
 }
-void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundary evidence, uint64_t eligibilityUs)
+void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundary evidence, uint64_t eligibilityUs,
+               ScreenLossInfo screen = {})
 {
-  ++collector().lost;
+  constexpr std::array<LossReason, 4> reasons{{LossReason::BatchCache, LossReason::BatchScreen,
+                                            LossReason::BatchOutcome, LossReason::BatchView}};
+  screen.evidenceUs = evidence.time; screen.evidenceOrder = evidence.order;
+  noteLoss(reasons[static_cast<size_t>(kind)], epoch, false, screen);
   LossLease lease(epoch);
   if (!lease.bank) { unbankedLoss(epoch); return; }
   auto& bank = *lease.bank;
@@ -377,9 +646,9 @@ void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundar
     }
   }
 }
-void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundary evidence)
+void batchLoss(ID publication, ID source, LostEvent kind, ID epoch, EventBoundary evidence, ScreenLossInfo screen = {})
 {
-  batchLoss(publication, source, kind, epoch, evidence, evidence.time);
+  batchLoss(publication, source, kind, epoch, evidence, evidence.time, screen);
 }
 #ifdef TILE_TRACE_TESTING
 void batchLoss(ID publication, ID source, LostEvent kind, ID epoch = 0)
@@ -478,26 +747,31 @@ struct BatchWrite
   explicit operator bool() const { return lock.owns_lock(); }
   ~BatchWrite() { if (lock) publishBatches(c); }
 };
-struct Frame
-{
-  ID id = 0, session = 0, surface = 0;
-  uint64_t ended = 0, swapStarted = 0;
-  int mode = 0;
-  bool swapped = false;
-  size_t count = 0;
-  std::array<Record, FrameCapacity> draws{};
-};
 thread_local Frame frame;
 #ifdef TILE_TRACE_TESTING
 std::atomic<uint64_t> testTime{0};
 std::atomic<bool> testDropViews{false};
 #endif
+size_t recordSlot(const std::array<Record, Capacity>& records, ID id)
+{
+  const auto first = id % Capacity;
+  // Slots stay occupied until reset, so an empty slot ends the search.
+  // A full table keeps the original replacement slot after checking every ID.
+  for (size_t offset = 0; offset < Capacity; ++offset)
+  {
+    TILE_TRACE_TEST_HOOK("record_probe");
+    const auto index = (first + offset) % Capacity;
+    if (!records[index].context.id || records[index].context.id == id) return index;
+  }
+  return first;
+}
 Record& slot(Collector& c, ID id)
 {
-  auto& record = c.records[id % Capacity];
+  const auto index = recordSlot(c.records, id);
+  auto& record = c.records[index];
   if (record.context.id != id)
   {
-    c.recordIndex.remove(id % Capacity);
+    c.recordIndex.remove(index);
     if (record.context.id) {
       ++c.evicted;
       c.retiredThrough = std::max(c.retiredThrough, record.context.id);
@@ -554,6 +828,72 @@ void merge(Collector& c, Record& record, const Context& context)
     record.context.outcome = Outcome::Truncated;
   }
   c.recordIndex.update(static_cast<size_t>(&record - c.records.data()), record.context);
+}
+bool enqueueRecord(Collector& c, const Context& context, uint64_t lossBaseline, uint64_t observedUs, ID observedOrder)
+{
+  auto& queue = c.recordQueue;
+  auto position = queue.reserved.load();
+  for (size_t attempt = 0; attempt < 4; ++attempt)
+  {
+    auto& entry = queue.entries[position % RecordQueueCapacity];
+    const auto sequence = entry.sequence.load(std::memory_order_acquire);
+    if (sequence == position)
+    {
+      TILE_TRACE_TEST_HOOK("record_queue_reservation_attempt");
+      if (!queue.reserved.compare_exchange_strong(position, position + 1)) continue;
+      TILE_TRACE_TEST_HOOK("record_queue_reserved");
+      entry.context = context;
+      entry.lossBaseline = lossBaseline;
+      entry.observedUs = observedUs;
+      entry.observedOrder = observedOrder;
+      entry.sequence.store(position + 1, std::memory_order_release);
+      return true;
+    }
+    if (sequence < position)
+    {
+      ++queue.rejected;
+      noteLoss(LossReason::RecordQueueFull, context.session);
+      return false;
+    }
+    position = queue.reserved.load();
+  }
+  ++queue.rejected;
+  noteLoss(LossReason::RecordQueueContention, context.session);
+  return false;
+}
+bool drainRecords(Collector& c)
+{
+  auto& queue = c.recordQueue;
+  for (size_t count = 0; count < RecordQueueCapacity; ++count)
+  {
+    const auto position = queue.consumed;
+    auto& entry = queue.entries[position % RecordQueueCapacity];
+    if (entry.sequence.load(std::memory_order_acquire) != position + 1)
+      return position == queue.reserved.load();
+    const auto& context = entry.context;
+    if (context.session == c.epoch.load())
+    {
+      if (!c.started) c.started = entry.observedUs;
+      auto& record = slot(c, context.id);
+      if (!record.context.id)
+      {
+        record.lossBaseline = entry.lossBaseline;
+        record.beforeFirstDraw = !context.time[Draw];
+        record.observedOrder = entry.observedOrder;
+      }
+      if (record.context.publication != context.publication && context.publication)
+        record.bindingOrder = entry.observedOrder;
+      if (context.outcome != Outcome::Pending && record.context.outcome != context.outcome)
+        record.outcomeOrder = entry.observedOrder;
+      merge(c, record, context);
+      archive(c, record);
+      ++queue.applied;
+    }
+    else ++queue.discarded;
+    ++queue.consumed;
+    entry.sequence.store(position + RecordQueueCapacity, std::memory_order_release);
+  }
+  return queue.consumed == queue.reserved.load();
 }
 ViewTile viewTile(const Context& context)
 {
@@ -746,7 +1086,7 @@ void batchOutcome(Collector& c, const Context& context, EventBoundary evidence)
         }
       }
 }
-void batchUse(Collector& c, const Context& context, uint64_t submittedUs, ID frameID, bool noDraw, ID requirement, ID drawOrder)
+void batchUse(Collector& c, const Context& context, uint64_t submittedUs, ID frameID, bool noDraw, ID requirement, ID drawOrder, bool deferred = false)
 {
   if (!context.publication || !context.generation || context.outcome == Outcome::Error) return;
   for (auto& batch : c.batches)
@@ -754,7 +1094,8 @@ void batchUse(Collector& c, const Context& context, uint64_t submittedUs, ID fra
       for (size_t i = 0; i < batch.count; ++i)
       {
         auto& member = batch.members[i];
-        if (!sameMember(member, context) || !member.viewKnown) continue;
+        if (!sameMember(member, context) || !member.viewKnown
+            || (deferred && member.admissionOrder > drawOrder)) continue;
         for (size_t j = 0; j < member.useCount; ++j)
         {
           auto& use = member.uses[j];
@@ -775,28 +1116,278 @@ void batchUse(Collector& c, const Context& context, uint64_t submittedUs, ID fra
         }
       }
 }
-void store(const Context& context) noexcept
+
+void uncertainSwap(Collector& c, const PendingSwap& event, const Record& drawn, LossReason reason)
+{
+  noteLoss(reason, event.frame.session);
+  batchLoss(drawn.context.publication, drawn.context.source, LostEvent::Screen, drawn.context.session,
+            {event.submittedUs, event.order}, drawn.context.time[Draw],
+            ScreenLossInfo{ScreenLossSite::SwapSubmitLock, &drawn.context});
+  for (auto& record : c.records)
+    if (record.context.session == drawn.context.session && record.context.publication == drawn.context.publication)
+    {
+      record.firstUseComplete = false;
+      record.beforeFirstDraw = false;
+      archive(c, record);
+    }
+  for (size_t i = 0; i < c.startupCount; ++i)
+    if (c.startup[i].context.session == drawn.context.session
+        && c.startup[i].context.publication == drawn.context.publication)
+    {
+      c.startup[i].firstUseComplete = false;
+      c.startup[i].beforeFirstDraw = false;
+    }
+  for (auto& batch : c.batches)
+    if (batch.session == drawn.context.session)
+      for (size_t i = 0; i < batch.count; ++i)
+        if (sameMember(batch.members[i], drawn.context))
+        {
+          batch.dirty = true;
+          for (auto& use : batch.members[i].uses) use.exact = false;
+        }
+}
+
+bool swapOrderKnown(Collector& c, const PendingSwap& event, const Record& drawn)
+{
+  const auto& context = drawn.context;
+  const auto known = [&](const Record& record)
+  {
+    const auto& candidate = record.context;
+    if (candidate.session != context.session || candidate.publication != context.publication
+        || candidate.map != context.map || candidate.source != context.source
+        || record.observedOrder > drawn.drawOrder || record.bindingOrder > drawn.drawOrder) return true;
+    if (candidate.id != context.id && candidate.kind != Kind::Publication
+        && (candidate.kind != Kind::Demand || candidate.consumer != context.consumer)) return true;
+    return candidate.time[Submitted] <= event.submittedUs
+      && (candidate.outcome == Outcome::Pending || candidate.outcome == Outcome::Submitted
+          || candidate.outcome == Outcome::Truncated || record.outcomeOrder <= event.order);
+  };
+  const auto* direct = &c.records[recordSlot(c.records, context.id)];
+  if (direct->context.id != context.id)
+    for (size_t i = 0; i < c.startupCount; ++i)
+      if (c.startup[i].context.id == context.id) { direct = &c.startup[i]; break; }
+  if (direct->context.id == context.id && (direct->observedOrder > drawn.drawOrder
+      || direct->bindingOrder > drawn.drawOrder)) return false;
+  if (!known(*direct)) return false;
+  for (auto link = c.recordIndex.heads[RecordIndex::bucket(context.session, context.publication)];
+       link; link = c.recordIndex.next[link - 1])
+    if (!known(c.records[link - 1])) return false;
+  for (const auto& batch : c.batches)
+    if (batch.session == context.session)
+      for (size_t i = 0; i < batch.count; ++i)
+      {
+        const auto& member = batch.members[i];
+        if (!sameMember(member, context) || member.admissionOrder > drawn.drawOrder) continue;
+        for (size_t j = 0; j < member.useCount; ++j)
+        {
+          const auto& use = member.uses[j];
+          if (use.requirement != drawn.drawRequirement || !(use.tile == viewTile(context))) continue;
+          const auto endpoint = use.submittedUs ? use.submittedUs : use.noDraw ? use.drawUs : 0;
+          if (endpoint > event.submittedUs || (endpoint == event.submittedUs && use.drawOrder > event.order))
+            return false;
+        }
+      }
+  return true;
+}
+
+void applySwapDraw(Collector& c, const PendingSwap& event, const Record& saved)
+{
+  const auto& completed = event.frame;
+  const auto time = event.submittedUs;
+  const bool success = event.success;
+  auto drawn = saved;
+
+  drawn.context.time[FrameEnd] = completed.ended;
+  drawn.context.time[SwapBegin] = completed.swapStarted;
+  if (success)
+  {
+    drawn.context.time[Submitted] = time;
+    drawn.context.outcome = Outcome::Submitted;
+  }
+  auto& record = slot(c, drawn.context.id);
+  const bool alreadySubmitted = record.context.time[Submitted] != 0;
+  merge(c, record, drawn.context);
+  const auto contribution = drawn.symbol ? 1 : 0;
+  if (!record.contributionDraw[contribution]) record.contributionDraw[contribution] = drawn.context.time[Draw];
+  if (success && !record.historyLost && !record.contributionSubmit[contribution]) {
+    record.contributionSubmit[contribution] = time;
+    record.contributionGeneration[contribution] = drawn.context.generation;
+  }
+  if (success && !record.historyLost && !alreadySubmitted) {
+    record.submittedDraw = drawn.context.time[Draw];
+    record.firstUseComplete = record.beforeFirstDraw && record.lossBaseline == event.lossBaseline;
+  }
+  if (!alreadySubmitted)
+  {
+    record.frame = completed.id; record.surface = completed.surface; record.symbol = drawn.symbol;
+    record.mode = completed.mode;
+    record.context.time[FrameEnd] = completed.ended;
+    record.context.time[SwapBegin] = completed.swapStarted;
+  }
+  if (!success) ++record.failedSwaps;
+  archive(c, record);
+  for (auto link = c.recordIndex.heads[RecordIndex::bucket(completed.session, drawn.context.publication)];
+       link; link = c.recordIndex.next[link - 1])
+  {
+    TILE_TRACE_TEST_HOOK("record_candidate");
+    auto& demand = c.records[link - 1];
+    auto& ctx = demand.context;
+    if (ctx.session != completed.session || (ctx.outcome != Outcome::Pending && ctx.outcome != Outcome::Submitted)) continue;
+    // Retained layouts can contain buckets from several accepted generations.
+    // Reuse takes the generation of the bucket that actually draws.
+    const bool receiver = ctx.kind == Kind::Demand && ctx.consumer == drawn.context.consumer &&
+      ctx.publication == drawn.context.publication &&
+      (ctx.generation == drawn.context.generation || ctx.origin == Origin::Renderer);
+    const bool publication = ctx.kind == Kind::Publication && ctx.publication == drawn.context.publication &&
+      (ctx.id == ctx.publication || ctx.consumer == drawn.context.consumer);
+    if ((!receiver && !publication) || ctx.map != drawn.context.map || ctx.source != drawn.context.source
+        || demand.observedOrder > drawn.drawOrder || demand.bindingOrder > drawn.drawOrder) continue;
+    if (!demand.contributionDraw[contribution]) demand.contributionDraw[contribution] = drawn.context.time[Draw];
+    if (success && !demand.contributionSubmit[contribution]) {
+      demand.contributionSubmit[contribution] = time;
+      demand.contributionGeneration[contribution] = drawn.context.generation;
+    }
+    if (ctx.outcome == Outcome::Submitted) { archive(c, demand); continue; }
+    if (!ctx.time[Draw]) ctx.time[Draw] = drawn.context.time[Draw];
+    if (!success) { ++demand.failedSwaps; archive(c, demand); continue; }
+    for (size_t j = FrameEnd; j < StageCount; ++j) ctx.time[j] = drawn.context.time[j];
+    ctx.outcome = Outcome::Submitted;
+    if (ctx.kind == Kind::Demand && ctx.origin == Origin::Renderer) ctx.generation = drawn.context.generation;
+    demand.frame = completed.id; demand.surface = completed.surface; demand.mode = completed.mode;
+    demand.submittedDraw = drawn.context.time[Draw];
+    demand.firstUseComplete = demand.beforeFirstDraw && demand.lossBaseline == event.lossBaseline && !demand.historyLost;
+    archive(c, demand);
+  }
+}
+
+bool enqueueSwap(Collector& c, const Frame& completed, bool success, EventBoundary evidence, int error = 0)
+{
+  auto& queue = c.swapQueue;
+  const auto lossBaseline = c.lost.load() + c.gaps.load();
+  SwapMutation mutation(queue);
+  auto position = queue.reserved.load();
+  LossReason reason = LossReason::SwapQueueContention;
+  for (size_t attempt = 0; attempt < 4; ++attempt)
+  {
+    auto& entry = queue.entries[position % SwapQueueCapacity];
+    const auto sequence = entry.sequence.load(std::memory_order_acquire);
+    if (sequence == position)
+    {
+      TILE_TRACE_TEST_HOOK("swap_queue_reservation_attempt");
+      if (!queue.reserved.compare_exchange_strong(position, position + 1)) continue;
+      TILE_TRACE_TEST_HOOK("swap_queue_reserved");
+      entry.frame.id = completed.id; entry.frame.session = completed.session;
+      entry.frame.surface = completed.surface; entry.frame.mode = completed.mode;
+      entry.frame.ended = completed.ended; entry.frame.swapStarted = completed.swapStarted;
+      entry.frame.captureGeneration = completed.captureGeneration; entry.frame.count = completed.count;
+      std::copy_n(completed.draws.begin(), completed.count, entry.frame.draws.begin());
+      entry.submittedUs = evidence.time; entry.order = evidence.order; entry.success = success; entry.error = error;
+      entry.lossBaseline = lossBaseline;
+      entry.sequence.store(position + 1, std::memory_order_release);
+      return true;
+    }
+    if (sequence < position) { reason = LossReason::SwapQueueFull; break; }
+    position = queue.reserved.load();
+  }
+  ++queue.rejected;
+  auto rejectedEpoch = c.rejectedSwapEpoch.load();
+  while (rejectedEpoch < completed.session
+         && !c.rejectedSwapEpoch.compare_exchange_weak(rejectedEpoch, completed.session)) {}
+  noteLoss(reason, completed.session);
+  for (size_t i = 0; i < completed.count; ++i)
+  {
+    const auto& drawn = completed.draws[i];
+    batchLoss(drawn.context.publication, drawn.context.source, LostEvent::Screen, drawn.context.session,
+              evidence, drawn.context.time[Draw], ScreenLossInfo{ScreenLossSite::SwapSubmitLock, &drawn.context});
+  }
+  return false;
+}
+
+bool drainSwaps(Collector& c, size_t drawBudget)
+{
+  auto& queue = c.swapQueue;
+  if (queue.consumed.load() == queue.reserved.load()) return !queue.active.load();
+  SwapMutation mutation(queue);
+  for (size_t frames = 0; frames < SwapQueueCapacity; ++frames)
+  {
+    const auto position = queue.consumed.load();
+    auto& entry = queue.entries[position % SwapQueueCapacity];
+    if (entry.sequence.load(std::memory_order_acquire) != position + 1)
+      return position == queue.reserved.load();
+    if (!drainRecords(c)) return false;
+    const bool stale = entry.frame.session != c.epoch.load()
+      || entry.frame.captureGeneration != c.captureGeneration.load();
+    const bool ordered = !before({entry.submittedUs, entry.order}, {queue.lastTime, queue.lastOrder});
+    if (!stale)
+    {
+      const auto begin = queue.drawCursor;
+      const auto end = std::min(entry.frame.count, begin + drawBudget);
+      if (begin != end)
+      {
+        std::array<bool, FrameCapacity> allowed{};
+        {
+          BatchWrite batchLock(c);
+          if (!batchLock) { ++queue.contended; return false; }
+          for (size_t i = begin; i < end; ++i)
+          {
+            TILE_TRACE_TEST_HOOK("swap_queue_apply");
+            const auto& drawn = entry.frame.draws[i];
+            allowed[i] = ordered && swapOrderKnown(c, entry, drawn);
+            if (!allowed[i]) uncertainSwap(c, entry, drawn, LossReason::SwapReplayOrder);
+            else if (entry.success)
+              batchUse(c, drawn.context, entry.submittedUs, entry.frame.id, false,
+                       drawn.drawRequirement, drawn.drawOrder, true);
+          }
+        }
+        for (size_t i = begin; i < end; ++i)
+        {
+          TILE_TRACE_TEST_HOOK("swap_records_apply");
+          if (allowed[i]) applySwapDraw(c, entry, entry.frame.draws[i]);
+          ++queue.drawCursor;
+          --drawBudget;
+        }
+      }
+      if (queue.drawCursor != entry.frame.count) return false;
+      if (ordered) { queue.lastTime = entry.submittedUs; queue.lastOrder = entry.order; }
+      c.activity[c.activityIndex++ % c.activity.size()] =
+        {entry.frame.id, 0, entry.submittedUs, entry.success ? 7 : 9, entry.error};
+      ++queue.applied;
+    }
+    else ++queue.discarded;
+    queue.drawCursor = 0;
+    queue.consumed.store(position + 1);
+    entry.sequence.store(position + SwapQueueCapacity, std::memory_order_release);
+  }
+  return queue.consumed.load() == queue.reserved.load();
+}
+
+bool tryDrainSwaps(Collector& c, size_t drawBudget)
+{
+  if (c.swapQueue.consumed.load() == c.swapQueue.reserved.load()) return !c.swapQueue.active.load();
+  std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
+  if (!lock) { ++c.swapQueue.contended; return false; }
+  return drainSwaps(c, drawBudget);
+}
+
+void store(const Context& context, ID observationOrder = 0) noexcept
 {
   auto& c = collector();
+  RecordProducer producer(c.recordQueue);
   if (!context.id || context.session != c.epoch.load() || !c.capture.load()) return;
+  const auto lossBaseline = c.lost.load() + c.gaps.load();
+  const auto observedUs = now();
+  TILE_TRACE_TEST_HOOK("store_before_lock");
+  if (!enqueueRecord(c, context, lossBaseline, observedUs, observationOrder ? observationOrder : nextID())) return;
   std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-  if (!lock) { ++c.lost; return; }
-  if (context.session != c.epoch.load()) return;
-  if (!c.started) c.started = now();
-  auto& record = slot(c, context.id);
-  if (!record.context.id) {
-    record.lossBaseline = c.lost.load() + c.gaps.load();
-    record.beforeFirstDraw = !context.time[Draw];
-  }
-  merge(c, record, context);
-  archive(c, record);
+  if (!lock) { ++c.recordQueue.contended; return; }
+  drainRecords(c);
 }
 void activity(int type, ID map, int value = 0) noexcept
 {
   auto& c = collector();
   if (!c.capture.load()) return;
   std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-  if (!lock) { ++c.lost; return; }
+  if (!lock) { noteLoss(LossReason::ActivityLock, frame.id ? frame.session : 0, true); return; }
   c.activity[c.activityIndex++ % c.activity.size()] = {frame.id, map, now(), type, value};
 }
 const char* outcomeName(Outcome value)
@@ -828,7 +1419,7 @@ uint64_t now() noexcept
 }
 ID session() noexcept { return collector().epoch.load(); }
 bool enabled() noexcept { return collector().capture.load(); }
-void loss() noexcept { ++collector().lost; }
+void loss() noexcept { noteLoss(LossReason::Explicit); }
 void cacheSnapshotTime(bool disk, uint64_t timestamp) noexcept {
   (disk ? collector().diskStatsTime : collector().memoryStatsTime).store(timestamp);
 }
@@ -837,6 +1428,7 @@ void configure(bool capture, bool reset)
   auto& c = collector();
   std::lock_guard<std::mutex> lock(c.mutex);
   std::lock_guard<std::mutex> batchLock(c.batchMutex);
+  LossMutation resetMutation(c, reset);
   const bool changed = c.capture.load() != capture;
   if (c.capture.load() && !capture && !reset) ++c.gaps;
   if (!reset)
@@ -867,8 +1459,10 @@ void configure(bool capture, bool reset)
     c.gaps = 0;
     c.evicted = 0;
     c.retiredThrough = 0;
+    c.swapQueue.lastTime = 0; c.swapQueue.lastOrder = 0;
     c.started = now();
     c.epoch.store(nextEpoch);
+    TILE_TRACE_TEST_HOOK("loss_reset");
   }
   if (changed || reset)
   {
@@ -915,7 +1509,8 @@ void finish(Context& context, Outcome outcome) noexcept
     BatchWrite lock(c);
     if (lock) batchOutcome(c, context, evidence);
     else batchLoss(context.kind == Kind::Demand ? context.id : context.publication, context.source,
-                   context.kind == Kind::Demand ? LostEvent::Screen : LostEvent::Outcome, context.session, evidence);
+                   context.kind == Kind::Demand ? LostEvent::Screen : LostEvent::Outcome, context.session, evidence,
+                   ScreenLossInfo{ScreenLossSite::FinishDemandLock, &context});
   }
   store(context);
 }
@@ -926,7 +1521,8 @@ void bindDemand(const Context& context) noexcept
   if (!context.demand || context.session != session()) return;
   {
     BatchWrite batchLock(c);
-    if (!batchLock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence);
+    if (!batchLock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence,
+                             ScreenLossInfo{ScreenLossSite::BindDemandLock, &context});
     else
     {
   for (auto& batch : c.batches)
@@ -939,17 +1535,23 @@ void bindDemand(const Context& context) noexcept
           continue;
         if (std::find(member.demands.begin(), member.demands.end(), context.demand) != member.demands.end()) continue;
         const auto free = std::find(member.demands.begin(), member.demands.end(), 0);
-        if (free == member.demands.end()) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence);
+        if (free == member.demands.end())
+          batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence,
+                    ScreenLossInfo{ScreenLossSite::BindDemandCapacity, &context,
+                                   member.demands.size(), member.demands.size()});
         else { *free = context.demand; batch.dirty = true; }
       }
     }
   }
   std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-  if (!lock) { ++c.lost; return; }
+  if (!lock) { noteLoss(LossReason::BindDemandLock, context.session, true); return; }
   if (context.session != c.epoch.load()) return;
-  auto& record = c.records[context.demand % Capacity];
-  if (record.context.id != context.demand) { ++c.lost; return; }
+  if (!drainRecords(c)) { noteLoss(LossReason::RecordPending, context.session); return; }
+  const auto index = recordSlot(c.records, context.demand);
+  auto& record = c.records[index];
+  if (record.context.id != context.demand) { noteLoss(LossReason::BindDemandMissing, context.session); return; }
   if (record.context.outcome != Outcome::Pending) return;
+  record.bindingOrder = evidence.order;
   record.context.publication = context.publication;
   record.context.generation = context.generation;
   record.context.origin = context.origin;
@@ -962,9 +1564,11 @@ void bindDemand(const Context& context) noexcept
     record.context.outcome = Outcome::Truncated;
     record.historyLost = true;
   }
-  if (context.outcome == Outcome::Error) record.context.outcome = Outcome::Error;
+  if (context.outcome == Outcome::Error)
+  { record.context.outcome = Outcome::Error; record.outcomeOrder = evidence.order; }
   if (context.empty && context.outcome != Outcome::Error && (context.time[Layout] || (context.origin == Origin::Renderer && context.generation))) {
     record.context.outcome = Outcome::Empty;
+    record.outcomeOrder = evidence.order;
     for (auto& artifact : c.records)
       if (artifact.context.kind == Kind::Publication && artifact.context.publication == context.publication &&
           artifact.context.outcome == Outcome::Pending) {
@@ -972,7 +1576,7 @@ void bindDemand(const Context& context) noexcept
         archive(c, artifact);
       }
   }
-  c.recordIndex.update(context.demand % Capacity, record.context);
+  c.recordIndex.update(index, record.context);
   archive(c, record);
 }
 void retireSource(ID source) noexcept
@@ -1013,11 +1617,13 @@ void retireSource(ID source) noexcept
   ++c.viewChanges;
   }
   std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-  if (!lock) { ++c.lost; return; }
+  if (!lock) { noteLoss(LossReason::RetireSourceLock, epoch, true); return; }
+  if (!drainRecords(c)) { noteLoss(LossReason::RecordPending, epoch); return; }
   for (auto& r : c.records)
     if (r.context.source == source && r.context.outcome == Outcome::Pending)
     {
       r.context.outcome = Outcome::Teardown;
+      r.outcomeOrder = evidence.order;
       archive(c, r);
     }
 }
@@ -1027,9 +1633,10 @@ FrameScope::FrameScope(int mode) noexcept
 {
   // Only entries below count are read, and draw initializes each slot before admitting it.
   frame.id = frame.session = frame.surface = 0;
-  frame.ended = frame.swapStarted = 0;
+  frame.ended = frame.swapStarted = frame.captureGeneration = 0;
   frame.mode = 0; frame.swapped = false; frame.count = 0;
   if (!enabled()) return;
+  frame.captureGeneration = captureGeneration();
   frame.id = nextID(); frame.session = session(); frame.mode = mode;
   activity(5, 0, mode);
 }
@@ -1048,7 +1655,7 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
     original.x = actualTile->x; original.y = actualTile->y; original.z = actualTile->z;
     original.overscaledZ = actualTile->overscaledZ; original.wrap = actualTile->wrap;
   }
-  if (!frame.id || !original.generation || !enabled()) return;
+  if (!frame.id || !original.generation || !enabled() || frame.captureGeneration != generation) return;
   for (size_t i = 0; i < frame.count; ++i)
     if (frame.draws[i].context.generation == original.generation &&
         frame.draws[i].context.consumer == original.consumer && frame.draws[i].symbol == symbol &&
@@ -1058,7 +1665,8 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
   if (context.session != frame.session) {
     auto& c = collector();
     std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-    if (!lock) { ++c.lost; return; }
+    if (!lock) { noteLoss(LossReason::RetainedDrawLock, frame.session, true); return; }
+    if (!drainRecords(c)) { noteLoss(LossReason::RecordPending, frame.session); return; }
     bool reused = false;
     for (auto link = c.recordIndex.heads[RecordIndex::bucket(frame.session, original.publication)];
          link; link = c.recordIndex.next[link - 1]) {
@@ -1078,7 +1686,12 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
     }
     if (!reused) return;
   }
-  if (frame.count == FrameCapacity) { batchLoss(original.publication, original.source, LostEvent::Screen, original.session, evidence); return; }
+  if (frame.count == FrameCapacity)
+  {
+    batchLoss(original.publication, original.source, LostEvent::Screen, original.session, evidence,
+              ScreenLossInfo{ScreenLossSite::DrawCapacity, &original, frame.count, FrameCapacity});
+    return;
+  }
   for (size_t i = Draw; i < StageCount; ++i) context.time[i] = 0;
   context.outcome = Outcome::Pending;
   auto& record = frame.draws[frame.count];
@@ -1089,7 +1702,8 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
   {
     auto& c = collector();
     BatchWrite lock(c);
-    if (!lock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence);
+    if (!lock) batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence,
+                        ScreenLossInfo{ScreenLossSite::DrawViewLock, &context});
     else if (c.captureGeneration.load() == generation)
     {
       if (const auto* view = currentView(c, context.map, context.source, context.session))
@@ -1101,7 +1715,7 @@ void draw(const Context& originalTrace, bool symbol, const ViewTile* actualTile)
       }
     }
   }
-  store(record.context);
+  store(record.context, evidence.order);
   for (size_t i = 0; i < frame.count; ++i)
     if (frame.draws[i].context.generation == context.generation &&
         frame.draws[i].context.consumer == context.consumer && frame.draws[i].symbol == symbol &&
@@ -1120,109 +1734,32 @@ void swapBegin(uintptr_t surface) noexcept
   if (!frame.id) return;
   {
   auto& c = collector();
-  std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
+  std::unique_lock<std::mutex> lock(c.surfaceMutex, std::try_to_lock);
   if (lock)
   {
     for (const auto& entry : c.surfaces)
       if (entry.first == surface) frame.surface = entry.second;
   }
-  else ++c.lost;
+  else noteLoss(LossReason::SwapSurfaceLock, frame.session);
   }
   frameEnd();
   frame.swapStarted = now();
 }
 void swapEnd(bool success, int error) noexcept
 {
-  if (!frame.id || frame.session != session()) return;
-  const auto time = now();
+  if (!frame.id || frame.session != session() || frame.captureGeneration != captureGeneration() || !enabled()) return;
+  const auto evidence = eventBoundary();
   frame.swapped = true;
-  activity(success ? 7 : 9, 0, error);
   auto& c = collector();
-  if (success)
-  {
-    BatchWrite batchLock(c);
-    for (size_t i = 0; i < frame.count; ++i)
-    {
-      const auto& drawn = frame.draws[i];
-      if (batchLock) batchUse(c, drawn.context, time, frame.id, false, drawn.drawRequirement, drawn.drawOrder);
-      else batchLoss(drawn.context.publication, drawn.context.source, LostEvent::Screen, drawn.context.session,
-                     {time, drawn.drawOrder}, drawn.context.time[Draw]);
-    }
-  }
-  std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-  if (!lock) { ++c.lost; return; }
-  if (frame.session != c.epoch.load()) return;
-  for (size_t i = 0; i < frame.count; ++i)
-  {
-    auto drawn = frame.draws[i];
-
-    drawn.context.time[FrameEnd] = frame.ended;
-    drawn.context.time[SwapBegin] = frame.swapStarted;
-    if (success)
-    {
-      drawn.context.time[Submitted] = time;
-      drawn.context.outcome = Outcome::Submitted;
-    }
-    auto& record = slot(c, drawn.context.id);
-    const bool alreadySubmitted = record.context.time[Submitted] != 0;
-    merge(c, record, drawn.context);
-    const auto contribution = drawn.symbol ? 1 : 0;
-    if (!record.contributionDraw[contribution]) record.contributionDraw[contribution] = drawn.context.time[Draw];
-    if (success && !record.historyLost && !record.contributionSubmit[contribution]) {
-      record.contributionSubmit[contribution] = time;
-      record.contributionGeneration[contribution] = drawn.context.generation;
-    }
-    if (success && !record.historyLost && !alreadySubmitted) {
-      record.submittedDraw = drawn.context.time[Draw];
-      record.firstUseComplete = record.beforeFirstDraw && record.lossBaseline == c.lost.load() + c.gaps.load();
-    }
-    if (!alreadySubmitted)
-    {
-      record.frame = frame.id; record.surface = frame.surface; record.symbol = drawn.symbol;
-      record.mode = frame.mode;
-      record.context.time[FrameEnd] = frame.ended;
-      record.context.time[SwapBegin] = frame.swapStarted;
-    }
-    if (!success) ++record.failedSwaps;
-    archive(c, record);
-    for (auto link = c.recordIndex.heads[RecordIndex::bucket(frame.session, drawn.context.publication)];
-         link; link = c.recordIndex.next[link - 1])
-    {
-      TILE_TRACE_TEST_HOOK("record_candidate");
-      auto& demand = c.records[link - 1];
-      auto& ctx = demand.context;
-      if (ctx.session != frame.session || (ctx.outcome != Outcome::Pending && ctx.outcome != Outcome::Submitted)) continue;
-      // Retained layouts can contain buckets from several accepted generations.
-      // Reuse takes the generation of the bucket that actually draws.
-      const bool receiver = ctx.kind == Kind::Demand && ctx.consumer == drawn.context.consumer &&
-        ctx.publication == drawn.context.publication &&
-        (ctx.generation == drawn.context.generation || ctx.origin == Origin::Renderer);
-      const bool publication = ctx.kind == Kind::Publication && ctx.publication == drawn.context.publication &&
-        (ctx.id == ctx.publication || ctx.consumer == drawn.context.consumer);
-      if (!receiver && !publication) continue;
-      if (!demand.contributionDraw[contribution]) demand.contributionDraw[contribution] = drawn.context.time[Draw];
-      if (success && !demand.contributionSubmit[contribution]) {
-        demand.contributionSubmit[contribution] = time;
-        demand.contributionGeneration[contribution] = drawn.context.generation;
-      }
-      if (ctx.outcome == Outcome::Submitted) { archive(c, demand); continue; }
-      if (!ctx.time[Draw]) ctx.time[Draw] = drawn.context.time[Draw];
-      if (!success) { ++demand.failedSwaps; archive(c, demand); continue; }
-      for (size_t j = FrameEnd; j < StageCount; ++j) ctx.time[j] = drawn.context.time[j];
-      ctx.outcome = Outcome::Submitted;
-      if (ctx.kind == Kind::Demand && ctx.origin == Origin::Renderer) ctx.generation = drawn.context.generation;
-      demand.frame = frame.id; demand.surface = frame.surface; demand.mode = frame.mode;
-      demand.submittedDraw = drawn.context.time[Draw];
-      demand.firstUseComplete = demand.beforeFirstDraw && demand.lossBaseline == c.lost.load() + c.gaps.load() && !demand.historyLost;
-      archive(c, demand);
-    }
-  }
+  enqueueSwap(c, frame, success, evidence, error);
+  tryDrainSwaps(c, FrameCapacity);
 }
+
 void surfaceCreated(uintptr_t surface) noexcept
 {
   auto& c = collector();
-  std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-  if (!lock) { ++c.lost; return; }
+  std::unique_lock<std::mutex> lock(c.surfaceMutex, std::try_to_lock);
+  if (!lock) { noteLoss(LossReason::SurfaceCreateLock); return; }
   for (auto& entry : c.surfaces)
     if (entry.first == surface) { entry.second = nextID(); return; }
   for (auto& entry : c.surfaces)
@@ -1231,14 +1768,14 @@ void surfaceCreated(uintptr_t surface) noexcept
       entry = {surface, nextID()};
       return;
     }
-  ++c.lost;
+  noteLoss(LossReason::SurfaceCapacity);
 }
 void surfaceDestroyed(uintptr_t surface) noexcept
 {
   activity(10, surface);
   auto& c = collector();
-  std::unique_lock<std::mutex> lock(c.mutex, std::try_to_lock);
-  if (!lock) { ++c.lost; return; }
+  std::unique_lock<std::mutex> lock(c.surfaceMutex, std::try_to_lock);
+  if (!lock) { noteLoss(LossReason::SurfaceDestroyLock); return; }
   for (auto& entry : c.surfaces) if (entry.first == surface) entry = {};
 }
 
@@ -1394,7 +1931,7 @@ void trackBatchMember(const BatchInfo& info, const Context& context) noexcept
     batch->id = info.id;
     batch->session = info.session;
   }
-  if (batch->count == BatchMemberCapacity) { ++c.lost; return; }
+  if (batch->count == BatchMemberCapacity) { noteLoss(LossReason::BatchMemberCapacity, context.session); return; }
   batch->dirty = true;
   auto& member = batch->members[batch->count++];
   member = {};
@@ -1403,6 +1940,7 @@ void trackBatchMember(const BatchInfo& info, const Context& context) noexcept
   member.demands[0] = context.demand;
   member.tile = viewTile(context);
   member.admittedUs = evidence.time;
+  member.admissionOrder = evidence.order;
   member.lossBaseline = c.gaps.load();
   member.viewGap = viewGap(context.source);
   member.publicationFailed = !c.capture.load() || !context.publication || context.session != info.session;
@@ -1419,7 +1957,7 @@ void trackBatchMember(const BatchInfo& info, const Context& context) noexcept
       if (member.useCount == member.uses.size())
       {
         member.useOverflow = true;
-        ++c.lost;
+        noteLoss(LossReason::BatchUseCapacity, context.session);
         break;
       }
       auto& use = member.uses[member.useCount++];
@@ -1498,7 +2036,12 @@ void batchLayoutAccepted(const Context& original, bool noDrawNeeded, ID evaluate
   auto& c = collector();
   if (!noDrawNeeded || !c.capture.load() || context.session != c.epoch.load()) return;
   BatchWrite lock(c);
-  if (!lock) { batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence); return; }
+  if (!lock)
+  {
+    batchLoss(context.publication, context.source, LostEvent::Screen, context.session, evidence,
+              ScreenLossInfo{ScreenLossSite::NoDrawLayoutLock, &context});
+    return;
+  }
   const auto* view = currentView(c, context.map, context.source, context.session);
   if (!view || view->id != (evaluatedView ? evaluatedView : context.view) || view->gap != viewGap(context.source)) return;
   const auto index = viewIndex(*view, viewTile(context));
@@ -1512,6 +2055,10 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
   auto& c = collector();
   const auto sequence = nextID();
   Batch batch;
+  if (!tryDrainSwaps(c, 32)) return {};
+  const SwapCut swapCut(c.swapQueue);
+  if (!swapCut.empty) return {};
+  const auto snapshotGeneration = c.captureGeneration.load();
   const auto currentSession = c.epoch.load();
   const auto losses = c.gaps.load();
   LossLease lossLease(currentSession);
@@ -1678,7 +2225,8 @@ std::string batchSnapshotJSON(const BatchInfo& info, bool includeMembers)
     out << ']';
   }
   out << '}';
-  if (currentSession != c.epoch.load()) return {};
+  if (currentSession != c.epoch.load() || snapshotGeneration != c.captureGeneration.load()
+      || !swapCut.unchanged(c.swapQueue)) return {};
   return out.str();
 }
 
@@ -1690,21 +2238,59 @@ std::string snapshotJSON()
   std::array<Activity, 128> events;
   size_t startupCount;
   uint64_t evicted, started, snapshotSession, lost, gaps;
+  uint64_t timestamp, reserved, pending, applied, discarded, rejected, contended;
+  bool recordsComplete, swapEpochQualified;
+  uint64_t swapReserved, swapConsumed, swapApplied, swapDiscarded, swapRejected, swapContended;
+  size_t swapCursor;
   bool capture;
   {
     std::lock_guard<std::mutex> lock(c.mutex);
+    auto& queue = c.recordQueue;
+    const auto queueRevision = queue.revision.load();
+    const auto queueActive = queue.active.load();
+    const auto drained = drainRecords(c);
+    const auto swapsDrained = drainSwaps(c, 32);
+    const SwapCut swapCut(c.swapQueue);
+    c.lossDiagnostics.snapshotCopyActive.store(true);
+    TILE_TRACE_TEST_HOOK("snapshot_copy");
     records = c.records; startup = c.startup; startupCount = c.startupCount;
     events = c.activity; evicted = c.evicted; started = c.started;
     snapshotSession = c.epoch.load(); lost = c.lost.load(); gaps = c.gaps.load(); capture = c.capture.load();
+    reserved = queue.reserved.load(); pending = reserved - queue.consumed;
+    applied = queue.applied; discarded = queue.discarded;
+    rejected = queue.rejected.load(); contended = queue.contended.load();
+    swapReserved = c.swapQueue.reserved.load(); swapConsumed = c.swapQueue.consumed.load();
+    swapApplied = c.swapQueue.applied; swapDiscarded = c.swapQueue.discarded;
+    swapRejected = c.swapQueue.rejected.load(); swapContended = c.swapQueue.contended.load();
+    swapCursor = c.swapQueue.drawCursor;
+    swapEpochQualified = c.rejectedSwapEpoch.load() < snapshotSession;
+    timestamp = now();
+    TILE_TRACE_TEST_HOOK("record_snapshot_timestamp");
+    recordsComplete = drained && swapsDrained && swapCut.unchanged(c.swapQueue) && !pending && !queueActive && !queue.active.load()
+      && queueRevision == queue.revision.load();
+    c.lossDiagnostics.snapshotCopyActive.store(false);
   }
-  const auto timestamp = now();
   std::ostringstream out;
   out << "{\"version\":1,\"available\":true,\"enabled\":" << (capture ? "true" : "false")
       << ",\"session\":\"" << snapshotSession << "\",\"timestampUs\":\"" << timestamp
       << "\",\"startedUs\":\"" << started << "\",\"lost\":" << lost
       << ",\"memoryStatsTimestampUs\":\"" << c.memoryStatsTime.load()
       << "\",\"diskStatsTimestampUs\":\"" << c.diskStatsTime.load() << "\""
-      << ",\"captureGaps\":" << gaps << ",\"evicted\":" << evicted << ",\"records\":[";
+      << ",\"captureGaps\":" << gaps << ",\"evicted\":" << evicted
+      << ",\"recordSnapshotComplete\":" << (recordsComplete ? "true" : "false")
+      << ",\"pendingRecordUpdates\":" << pending
+      << ",\"recordQueue\":{\"version\":1,\"available\":" << (recordsComplete ? "true" : "false")
+      << ",\"capacity\":" << RecordQueueCapacity << ",\"reserved\":\"" << reserved
+      << "\",\"applied\":\"" << applied << "\",\"discarded\":\"" << discarded
+      << "\",\"rejected\":\"" << rejected << "\",\"contended\":\"" << contended << "\"}"
+      << ",\"pendingSwapFrames\":" << swapReserved - swapConsumed
+      << ",\"swapQueue\":{\"version\":1,\"available\":" << (recordsComplete ? "true" : "false")
+      << ",\"epochQualified\":" << (swapEpochQualified ? "true" : "false")
+      << ",\"capacity\":" << SwapQueueCapacity << ",\"storageBytes\":" << sizeof(SwapQueue)
+      << ",\"reserved\":\"" << swapReserved << "\",\"applied\":\"" << swapApplied
+      << "\",\"discarded\":\"" << swapDiscarded << "\",\"rejected\":\"" << swapRejected
+      << "\",\"contended\":\"" << swapContended << "\",\"drawCursor\":" << swapCursor << "}"
+      << ",\"lossDiagnostics\":" << lossDiagnosticsJSON(snapshotSession, lost, recordsComplete) << ",\"records\":[";
   bool first = true;
   auto emit = [&](const Record& record, bool early)
   {
@@ -1730,9 +2316,9 @@ std::string snapshotJSON()
             ctx.payloadFormat == PayloadFormat::LegacyFeatures ? "geojson-vt" : "unavailable")
         << "\",\"timesUs\":[";
     for (size_t i = 0; i < StageCount; ++i) { if (i) out << ','; out << '\"' << ctx.time[i] << '\"'; }
-    out << "],\"firstUseComplete\":" << (record.firstUseComplete ? "true" : "false")
-        << ",\"firstDrawComplete\":" << ((record.firstUseComplete ||
-            (record.beforeFirstDraw && record.lossBaseline == lost + gaps && !record.historyLost)) ? "true" : "false")
+    out << "],\"firstUseComplete\":" << (swapEpochQualified && record.firstUseComplete ? "true" : "false")
+        << ",\"firstDrawComplete\":" << ((swapEpochQualified && (record.firstUseComplete ||
+            (record.beforeFirstDraw && record.lossBaseline == lost + gaps && !record.historyLost))) ? "true" : "false")
         << ",\"submittedDrawUs\":\"" << record.submittedDraw
         << "\",\"geometrySubmittedUs\":\"" << record.contributionSubmit[0]
         << "\",\"symbolSubmittedUs\":\"" << record.contributionSubmit[1]
@@ -1775,7 +2361,7 @@ std::string snapshotJSON()
     emit(record, early);
   }
   for (size_t i = 0; i < startupCount; ++i)
-    if (records[startup[i].context.id % Capacity].context.id != startup[i].context.id) emit(startup[i], true);
+    if (records[recordSlot(records, startup[i].context.id)].context.id != startup[i].context.id) emit(startup[i], true);
   out << "],\"activity\":[";
   first = true;
   for (const auto& event : events)
@@ -1852,6 +2438,26 @@ void measureJSON(std::ostream& out, const Measure& value)
   if (value.cpuValid) out << '"' << value.cpu << '"';
   else out << "null";
   out << '}';
+}
+void groupWorkJSON(std::ostream& out, const GroupWork& values)
+{
+  constexpr const char* names[] = {"selection", "bucket", "interleaved", "deferredPreparation",
+    "deferredBucket", "deferredCallback"};
+  out << '{';
+  for (size_t i = 0; i < values.size(); ++i)
+  {
+    if (i) out << ',';
+    out << '"' << names[i] << "\":";
+    measureJSON(out, values[i]);
+  }
+  out << '}';
+}
+void sumMeasure(Measure& total, const Measure& part) noexcept
+{
+  total.wall += part.wall;
+  total.cpu += part.cpu;
+  total.calls += part.calls;
+  total.cpuValid = total.cpuValid && part.cpuValid;
 }
 } // namespace
 
@@ -1945,10 +2551,57 @@ void Tracker::add(Phase phase, Stamp start, Stamp end) noexcept
 {
   if (active()) addMeasure(value.work[static_cast<size_t>(phase)], start, end, value.valid);
 }
+void Tracker::measure(Measure& target, Stamp start, Stamp end) noexcept
+{
+  if (active()) addMeasure(target, start, end, value.valid);
+}
+GroupKey Tracker::groupKey() const noexcept
+{
+  if (!active()) return {};
+  return {value.seed.inputId, value.seed.generation, value.seed.captureGeneration,
+          nextParseOrdinal(), value.groupsSeen + 1};
+}
+bool Tracker::acceptsDeferred(const GroupKey& key) const noexcept
+{
+  return active() && key.generation == value.seed.generation && key.inputId == value.seed.inputId
+    && key.captureGeneration == value.seed.captureGeneration && key.parseOrdinal == value.work[0].calls
+    && key.ordinal && key.ordinal <= value.groupsSeen;
+}
+bool Tracker::beginDeferred(const GroupKey& key) noexcept
+{
+  if (!active() || !key.generation) return false;
+  if (acceptsDeferred(key)) return true;
+  ++value.groupTotals.rejectedDeferred;
+  return false;
+}
+void Tracker::addDeferred(const GroupKey& key, GroupPhase phase, Stamp start, Stamp end) noexcept
+{
+  if (!active() || !key.generation) return;
+  if (!acceptsDeferred(key)) { ++value.groupTotals.rejectedDeferred; return; }
+  Measure part;
+  addMeasure(part, start, end, value.valid);
+  const auto index = static_cast<size_t>(phase);
+  sumMeasure(value.groupTotals.phases[index], part);
+  for (size_t i = 0; i < value.groupCount; ++i)
+    if (value.groups[i].ordinal == key.ordinal) sumMeasure(value.groups[i].phases[index], part);
+}
 void Tracker::addGroup(Group group) noexcept
 {
   if (!active()) return;
   ++value.groupsSeen;
+  if (!group.ordinal) group.ordinal = value.groupsSeen;
+  auto& total = value.groupTotals;
+  total.inputFeatures += group.features;
+  total.deferredGroups += group.bucketDeferred;
+  if (group.counts.available)
+  {
+    ++total.countedGroups;
+    total.examined += group.counts.examined;
+    total.matched += group.counts.matched;
+    if (group.counts.matched > group.counts.examined || group.counts.examined > group.features) value.valid = false;
+  }
+  else ++total.uncountedGroups;
+  for (size_t i = 0; i < group.phases.size(); ++i) sumMeasure(total.phases[i], group.phases[i]);
   if (value.groupCount < value.groups.size()) value.groups[value.groupCount++] = group;
   else
   {
@@ -1956,6 +2609,30 @@ void Tracker::addGroup(Group group) noexcept
       [](const Group& a, const Group& b) { return a.work.wall < b.work.wall; });
     if (found->work.wall < group.work.wall) *found = group;
   }
+}
+void Tracker::addSelection(const featureselection::Statistics& source) noexcept
+{
+  if (!active()) return;
+  auto& target = value.candidates;
+  if (target.applied.mode != source.applied.mode || target.applied.generation != source.applied.generation)
+    value.valid = false;
+  target.parses += source.parses;
+  target.builds += source.builds;
+  target.eligibleGroups += source.eligibleGroups;
+  target.indexedGroups += source.indexedGroups;
+  target.fallbackGroups += source.fallbackGroups;
+  target.verifiedGroups += source.verifiedGroups;
+  target.verificationFailures += source.verificationFailures;
+  target.limitFallbacks += source.limitFallbacks;
+  target.buildUs += source.buildUs;
+  target.buildCpuUs += source.buildCpuUs;
+  target.queryUs += source.queryUs;
+  target.queryCpuUs += source.queryCpuUs;
+  target.verifyUs += source.verifyUs;
+  target.verifyCpuUs += source.verifyCpuUs;
+  target.postingCapacityBytes = std::max(target.postingCapacityBytes, source.postingCapacityBytes);
+  target.scratchCapacityBytes = std::max(target.scratchCapacityBytes, source.scratchCapacityBytes);
+  target.cpuAvailable = target.cpuAvailable && source.cpuAvailable;
 }
 Profile Tracker::result(uint64_t posted) noexcept
 {
@@ -1997,6 +2674,8 @@ GroupScope::GroupScope(Tracker& value, std::string_view name, uint64_t features,
   group.features = features;
   group.layoutRequired = required;
   group.parseOrdinal = tracker->nextParseOrdinal();
+  identity = tracker->groupKey();
+  group.ordinal = identity.ordinal;
 }
 GroupScope::~GroupScope()
 {
@@ -2005,6 +2684,17 @@ GroupScope::~GroupScope()
   addMeasure(group.work, start, sample(), valid);
   if (!valid) tracker->invalidate();
   tracker->addGroup(group);
+}
+GroupWorkScope::GroupWorkScope(Tracker& value, Measure* target) noexcept
+  : tracker(target && value.active() ? &value : nullptr), measure(target), start(tracker ? sample() : Stamp{}) {}
+GroupWorkScope::GroupWorkScope(Tracker& value, GroupKey key_, GroupPhase phase_) noexcept
+  : tracker(value.beginDeferred(key_) ? &value : nullptr), key(key_), phase(phase_),
+    start(tracker ? sample() : Stamp{}) {}
+GroupWorkScope::~GroupWorkScope()
+{
+  if (!tracker) return;
+  if (measure) tracker->measure(*measure, start, sample());
+  else tracker->addDeferred(key, phase, start, sample());
 }
 void publish(const tiletrace::Context& context, const Profile& profile, Disposition disposition,
              uint64_t ownerReceived, uint64_t ownerCorrelation, uint64_t resultCorrelation) noexcept
@@ -2031,7 +2721,8 @@ std::string snapshotJSON(uint64_t captureSession)
 {
   auto& store = timingStore();
   const auto captureGeneration = tiletrace::captureGeneration();
-  std::array<TimingRecord, TimingCapacity> records;
+  const auto requestedSelection = featureselection::policy();
+  auto records = std::make_unique<std::array<TimingRecord, TimingCapacity>>();
   uint64_t generation, sequence, overwritten, lost, stale, revision;
   size_t count;
   bool recording;
@@ -2041,22 +2732,25 @@ std::string snapshotJSON(uint64_t captureSession)
     generation = store.generation.load(); recording = store.enabled.load();
     sequence = store.sequence; overwritten = store.overwritten; count = store.count;
     lost = store.lost.load(); stale = store.stale.load(); revision = store.revision.load();
-    for (size_t i = 0; i < count; ++i) records[i] = store.records[(sequence - count + i) % TimingCapacity];
+    for (size_t i = 0; i < count; ++i) (*records)[i] = store.records[(sequence - count + i) % TimingCapacity];
   }
   const bool coherent = revision == store.revision.load() && generation == store.generation.load()
     && lost == store.lost.load() && stale == store.stale.load() && captureSession == tiletrace::session()
-    && captureGeneration == tiletrace::captureGeneration();
+    && captureGeneration == tiletrace::captureGeneration()
+    && requestedSelection.generation == featureselection::policy().generation;
   std::ostringstream out;
   out << "{\"version\":1,\"available\":" << (coherent ? "true" : "false")
       << ",\"enabled\":" << (recording ? "true" : "false")
-      << ",\"generation\":\"" << generation << "\",\"captureGeneration\":\"" << captureGeneration
+      << ",\"candidateModeRequested\":" << unsigned(requestedSelection.mode)
+      << ",\"candidateGenerationRequested\":\"" << requestedSelection.generation
+      << "\",\"generation\":\"" << generation << "\",\"captureGeneration\":\"" << captureGeneration
       << "\",\"capacity\":" << TimingCapacity
       << ",\"sequence\":\"" << sequence << "\",\"overwritten\":\"" << overwritten
       << "\",\"lost\":\"" << lost << "\",\"stale\":\"" << stale << "\",\"records\":[";
   bool first = true;
   for (size_t i = 0; i < count; ++i)
   {
-    const auto& r = records[i]; const auto& p = r.profile; const auto& c = r.context;
+    const auto& r = (*records)[i]; const auto& p = r.profile; const auto& c = r.context;
     if (c.session != captureSession) continue;
     if (!first) out << ',';
     first = false;
@@ -2089,6 +2783,27 @@ std::string snapshotJSON(uint64_t captureSession)
       out << '"' << gaps[j] << "\":{\"wallUs\":\"" << gap.wall << "\",\"intervals\":\"" << gap.intervals
           << "\",\"pendingIntervals\":\"" << gap.pendingIntervals << "\",\"stateMask\":" << gap.stateMask << '}';
     }
+    const auto& candidate = p.candidates;
+    out << "},\"candidateSelection\":{\"version\":1,\"mode\":" << unsigned(candidate.applied.mode)
+        << ",\"generation\":\"" << candidate.applied.generation << "\",\"parses\":\"" << candidate.parses
+        << "\",\"builds\":\"" << candidate.builds << "\",\"eligibleGroups\":\"" << candidate.eligibleGroups
+        << "\",\"indexedGroups\":\"" << candidate.indexedGroups << "\",\"fallbackGroups\":\"" << candidate.fallbackGroups
+        << "\",\"verifiedGroups\":\"" << candidate.verifiedGroups
+        << "\",\"verificationFailures\":\"" << candidate.verificationFailures
+        << "\",\"limitFallbacks\":\"" << candidate.limitFallbacks
+        << "\",\"buildUs\":\"" << candidate.buildUs << "\",\"buildCpuUs\":\"" << candidate.buildCpuUs
+        << "\",\"queryUs\":\"" << candidate.queryUs << "\",\"queryCpuUs\":\"" << candidate.queryCpuUs
+        << "\",\"verifyUs\":\"" << candidate.verifyUs << "\",\"verifyCpuUs\":\"" << candidate.verifyCpuUs
+        << "\",\"postingCapacityBytes\":\"" << candidate.postingCapacityBytes
+        << "\",\"scratchCapacityBytes\":\"" << candidate.scratchCapacityBytes
+        << "\",\"cpuAvailable\":" << (candidate.cpuAvailable ? "true" : "false")
+        << "},\"groupSplit\":{\"version\":1,\"inputFeatures\":\"" << p.groupTotals.inputFeatures
+        << "\",\"examined\":\"" << p.groupTotals.examined << "\",\"matched\":\"" << p.groupTotals.matched
+        << "\",\"countedGroups\":\"" << p.groupTotals.countedGroups
+        << "\",\"uncountedGroups\":\"" << p.groupTotals.uncountedGroups
+        << "\",\"deferredGroups\":\"" << p.groupTotals.deferredGroups
+        << "\",\"rejectedDeferred\":\"" << p.groupTotals.rejectedDeferred << "\",\"work\":";
+    groupWorkJSON(out, p.groupTotals.phases);
     out << "},\"groupsSeen\":\"" << p.groupsSeen << "\",\"topGroups\":[";
     for (size_t j = 0; j < p.groupCount; ++j)
     {
@@ -2096,9 +2811,14 @@ std::string snapshotJSON(uint64_t captureSession)
       if (j) out << ',';
       out << "{\"name\":"; quotedName(out, group.name);
       out << ",\"nameTruncated\":" << (group.nameTruncated ? "true" : "false")
-          << ",\"parseOrdinal\":\"" << group.parseOrdinal << "\",\"features\":\"" << group.features
+          << ",\"parseOrdinal\":\"" << group.parseOrdinal << "\",\"ordinal\":\"" << group.ordinal
+          << "\",\"features\":\"" << group.features
           << "\",\"layoutRequired\":" << (group.layoutRequired ? "true" : "false") << ",\"work\":";
-      measureJSON(out, group.work); out << '}';
+      measureJSON(out, group.work);
+      out << ",\"split\":{\"countsAvailable\":" << (group.counts.available ? "true" : "false")
+          << ",\"examined\":\"" << group.counts.examined << "\",\"matched\":\"" << group.counts.matched
+          << "\",\"bucketDeferred\":" << (group.bucketDeferred ? "true" : "false") << ",\"work\":";
+      groupWorkJSON(out, group.phases); out << "}}";
     }
     out << "]}";
   }

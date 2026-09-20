@@ -13,7 +13,9 @@ class CircleLayout final : public Layout {
 public:
     CircleLayout(const BucketParameters& parameters,
                  const std::vector<Immutable<style::LayerProperties>>& group,
-                 std::unique_ptr<GeometryTileLayer> sourceLayer_)
+                 std::unique_ptr<GeometryTileLayer> sourceLayer_,
+                 layouttiming::FeatureCounts* timingCounts = nullptr,
+                 FeatureSelection* selection = nullptr, featureselection::Statistics* statistics = nullptr)
         : sourceLayer(std::move(sourceLayer_)),
           zoom(parameters.tileID.overscaledZ),
           paintZoomBias(parameters.paintZoomBias),
@@ -32,7 +34,10 @@ public:
         }
 
         const size_t featureCount = sourceLayer->featureCount();
-        for (size_t i = 0; i < featureCount; ++i) {
+        const auto candidates = selectFeatureCandidates(selection, featureCount, leaderLayerProperties->layerImpl().filter,
+          style::expression::EvaluationContext(zoom).withCanonicalTileID(&parameters.tileID.canonical), statistics);
+        for (size_t position = 0; position < candidates.size(); ++position) {
+            const auto i = candidates[position];
             auto feature = sourceLayer->getFeature(i);
             if (!leaderLayerProperties->layerImpl().filter(style::expression::EvaluationContext(zoom, feature.get())
                                                                .withCanonicalTileID(&parameters.tileID.canonical))) {
@@ -51,6 +56,7 @@ public:
                 features.cbegin(), features.cend(), circleFeature); // NOLINT(modernize-use-ranges)
             features.insert(sortPosition, std::move(circleFeature));
         }
+        if (timingCounts) *timingCounts = {candidates.size(), features.size(), true};
     }
 
     bool hasDependencies() const override { return false; }
@@ -122,11 +128,11 @@ private:
                 // this geometry will be of the Point type, and we'll derive
                 // two triangles from it.
                 //
-                // ┌─────────┐
-                // │ 4     3 │
-                // │         │
-                // │ 1     2 │
-                // └─────────┘
+                // +---------+
+                // | 4     3 |
+                // |         |
+                // | 1     2 |
+                // +---------+
                 //
                 vertices.emplace_back(CircleBucket::vertex(point, -1, -1)); // 1
                 vertices.emplace_back(CircleBucket::vertex(point, 1, -1));  // 2

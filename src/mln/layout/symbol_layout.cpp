@@ -141,6 +141,7 @@ SymbolLayout::SymbolLayout(const BucketParameters& parameters,
     const bool hasIcon = has<IconImage>(*layout);
 
     if (!hasText && !hasIcon) {
+        if (layoutParameters.timingCounts) *layoutParameters.timingCounts = {0, 0, true};
         return;
     }
 
@@ -170,12 +171,18 @@ SymbolLayout::SymbolLayout(const BucketParameters& parameters,
 
     // Determine glyph dependencies
     const size_t featureCount = sourceLayer->featureCount();
-    for (size_t i = 0; i < featureCount; ++i) {
+    uint64_t matchedFeatures = 0;
+    const auto candidates = selectFeatureCandidates(layoutParameters.featureSelection, featureCount, leader.filter,
+      expression::EvaluationContext(this->zoom).withCanonicalTileID(&parameters.tileID.canonical),
+      layoutParameters.selectionStatistics);
+    for (size_t position = 0; position < candidates.size(); ++position) {
+        const auto i = candidates[position];
         auto feature = sourceLayer->getFeature(i);
         if (!leader.filter(expression::EvaluationContext(this->zoom, feature.get())
                                .withCanonicalTileID(&parameters.tileID.canonical)))
             continue;
 
+        if (layoutParameters.timingCounts) ++matchedFeatures;
         SymbolFeature ft(std::move(feature));
 
         ft.index = i;
@@ -316,6 +323,8 @@ SymbolLayout::SymbolLayout(const BucketParameters& parameters,
     if (layout->get<SymbolPlacement>() == SymbolPlacementType::Line) {
         util::mergeLines(features);
     }
+    if (layoutParameters.timingCounts)
+        *layoutParameters.timingCounts = {candidates.size(), matchedFeatures, true};
 }
 
 void SymbolLayout::finalizeSymbols(HBShapeResults& results) {

@@ -172,7 +172,7 @@ void intraFrameCase()
   const auto requirement = frame.draws[0].drawRequirement;
   at(3000); configure(false); at(4000); resume();
   at(5000); draw(la, false);
-  assert(frame.count == 2 && frame.draws[1].drawRequirement != requirement);
+  assert(frame.count == 1 && frame.draws[0].drawRequirement == requirement);
   at(6000); swapBegin(99); swapEnd(true); dump("pause_inside_frame");
 }
 void preparationRace(bool reset)
@@ -211,7 +211,7 @@ void drawRace()
     assert(frame.count == 1 && !frame.draws[0].drawRequirement);
     assert(frame.draws[0].context.time[Draw] == 2000);
     draw(la, false);
-    assert(frame.count == 2 && frame.draws[1].drawRequirement && frame.draws[1].context.time[Draw] == 4000);
+    assert(frame.count == 1 && !frame.draws[0].drawRequirement);
     swapBegin(99); swapEnd(true);
   });
   gate.wait();

@@ -129,7 +129,12 @@ public:
         }
 
         const size_t featureCount = sourceLayer->featureCount();
-        for (size_t i = 0; i < featureCount; ++i) {
+        const auto candidates = selectFeatureCandidates(layoutParameters.featureSelection, featureCount,
+          leaderLayerProperties->layerImpl().filter,
+          style::expression::EvaluationContext(this->zoom).withCanonicalTileID(&parameters.tileID.canonical),
+          layoutParameters.selectionStatistics);
+        for (size_t position = 0; position < candidates.size(); ++position) {
+            const auto i = candidates[position];
             auto feature = sourceLayer->getFeature(i);
             if (!leaderLayerProperties->layerImpl().filter(
                     style::expression::EvaluationContext(this->zoom, feature.get())
@@ -182,6 +187,8 @@ public:
                                                                 layout,
                                                                 parameters.tileID.canonical);
         }
+        if (layoutParameters.timingCounts)
+            *layoutParameters.timingCounts = {candidates.size(), features.size(), true};
     };
 
     bool hasDependencies() const override { return hasPattern; }

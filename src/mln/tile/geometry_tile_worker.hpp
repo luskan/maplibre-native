@@ -64,6 +64,8 @@ public:
     void setDataTraced(std::unique_ptr<const GeometryTileData>,
                        std::set<std::string> availableImages, uint64_t correlationID,
                        layouttiming::Seed);
+    void setDataSelected(std::unique_ptr<const GeometryTileData>, std::set<std::string>, uint64_t,
+                         layouttiming::Seed, featureselection::Policy);
     void reset(uint64_t correlationID_);
     void setShowCollisionBoxes(bool showCollisionBoxes_, uint64_t correlationID_);
 
@@ -83,6 +85,7 @@ private:
       ~TimingHandler();
     };
     layouttiming::Tracker layoutTiming;
+    featureselection::Policy selectionPolicy;
     void retireTiming(layouttiming::Disposition) noexcept;
     void onGlyphsAvailableImpl(GlyphMap, HBShapeResults);
     void onImagesAvailableImpl(ImageMap, ImageMap, ImageVersionMap, uint64_t);

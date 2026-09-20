@@ -3,6 +3,15 @@
 #include <mln/tile/geojson_tile_data.hpp>
 #include <mln/tile/custom_geometry_tile.hpp>
 #include <mln/style/custom_tile_conversion.hpp>
+#include <mln/style/expression/dsl.hpp>
+#include <mln/style/filter.hpp>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <mln/util/rapidjson.hpp>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 #include <array>
 #include <barrier>
@@ -396,5 +405,214 @@ TEST(NativeTilePayload, RejectsInvalidConversionOptionsAndMetadata)
     if (invalid == 3) info.conversion.tolerance = std::numeric_limits<double>::quiet_NaN();
     if (invalid == 4) info.tileID.z = 33;
     EXPECT_THROW(NativeTileBuilder{info}, std::invalid_argument);
+  }
+}
+
+namespace
+{
+style::Filter selectionFilter(const char* text)
+{
+  auto expression = style::expression::dsl::createExpression(text);
+  if (!expression) throw std::runtime_error("Invalid test filter");
+  style::Filter filter;
+  filter.expression = std::shared_ptr<const style::expression::Expression>(std::move(expression));
+  return filter;
+}
+NativeTilePayloadPtr selectionPayload()
+{
+  std::vector<PropertyMap> values{
+    {{"rc", int64_t{6}}}, {{"rc", uint64_t{6}}}, {{"rc", 6.0}}, {{"rc", "6"}},
+    {{"rc", NullValue{}}}, {}, {{"rc", int64_t{5}}}, {{"rc", int64_t{5}}, {"cat", int64_t{3}}},
+    {{"rc", int64_t{5}}, {"cat", NullValue{}}}, {{"rc", int64_t{5}}, {"cat", int64_t{10}}},
+    {{"rc", uint64_t{9007199254740993ULL}}}, {{"rc", int64_t{-1}}}, {{"rc", -0.0}},
+    {{"rc", std::numeric_limits<double>::infinity()}}, {{"rc", std::numeric_limits<double>::quiet_NaN()}},
+    {{"rc", true}}, {{"rc", Value::array_type{int64_t{6}}}}};
+  NativeTileBuilder builder(metadata());
+  for (size_t i = 0; i < values.size(); ++i)
+    builder.appendFinal(FeatureType::Point, {{{100, 100}}}, std::move(values[i]), uint64_t{i});
+  return std::move(builder).seal();
+}
+std::vector<size_t> selectionMatches(const GeometryTileLayer& layer, const style::Filter& filter,
+                                    const FeatureCandidates& candidates)
+{
+  std::vector<size_t> result;
+  const auto canonical = metadata().tileID;
+  for (size_t position = 0; position < candidates.size(); ++position)
+  {
+    const auto i = candidates[position];
+    auto feature = layer.getFeature(i);
+    if (filter(style::expression::EvaluationContext(5.0f, feature.get()).withCanonicalTileID(&canonical)))
+      result.push_back(i);
+  }
+  return result;
+}
+}
+
+TEST(NativeGeometryTileData, CandidateIndexPreservesOrderedMatchesAndFullQueries)
+{
+  auto payload = selectionPayload();
+  NativeGeometryTileData data(payload);
+  auto layer = data.getLayer("");
+  const std::vector<const char*> expressions{
+    R"(["==",["get","rc"],6])", R"(["==",6,["get","rc"]])",
+    R"(["any",["==",["get","cat"],10],["all",["!",["has","cat"]],["==",["get","rc"],5]]])",
+    R"(["all",["==",["get","rc"],5],["!",["has","cat"]]])",
+    R"(["==",["get","rc"],9007199254740992])", R"(["==",["get","rc"],0])",
+    R"(["==",["get","rc"],-1])", R"(["==",["get","rc"],999])",
+    R"(["any",["==",["get","rc"],6],["has","cat"]])",
+    R"(["==",["get","rc"],null])", R"(["==",["get","rc"],"6"])",
+    R"(["==",["get","rc",["literal",{"rc":6}]],6])",
+    R"(["all",["==",["get","rc"],6],[">",["zoom"],2]])"};
+  std::vector<style::Filter> filters;
+  for (const auto* text : expressions) filters.push_back(selectionFilter(text));
+  std::vector<const style::Filter*> pointers;
+  for (const auto& filter : filters) pointers.push_back(&filter);
+  for (const auto mode : {featureselection::Mode::Indexed, featureselection::Mode::Verify})
+  {
+    featureselection::Statistics statistics;
+    statistics.applied.mode = mode;
+    auto selection = data.createFeatureSelection(pointers, statistics, false);
+    ASSERT_TRUE(selection);
+    const auto canonical = metadata().tileID;
+    for (size_t f = 0; f < filters.size(); ++f)
+    {
+      const auto candidates = selection->candidates(filters[f],
+        style::expression::EvaluationContext(5.0f).withCanonicalTileID(&canonical));
+      if (f < 8 || f == 12) EXPECT_TRUE(candidates.indices.has_value());
+      else EXPECT_FALSE(candidates.indices.has_value());
+      if (candidates.indices)
+      {
+        EXPECT_TRUE(std::is_sorted(candidates.indices->begin(), candidates.indices->end()));
+        EXPECT_EQ(candidates.indices->end(), std::adjacent_find(candidates.indices->begin(), candidates.indices->end()));
+      }
+      EXPECT_EQ(selectionMatches(*layer, filters[f], {layer->featureCount(), std::nullopt}),
+                selectionMatches(*layer, filters[f], candidates));
+    }
+    EXPECT_EQ(0u, statistics.verificationFailures);
+    EXPECT_GT(statistics.indexedGroups, 0u);
+    if (mode == featureselection::Mode::Verify) EXPECT_EQ(statistics.indexedGroups, statistics.verifiedGroups);
+    selection.reset();
+    auto clone = data.clone();
+    auto queried = clone->getLayer("");
+    ASSERT_EQ(payload->features().size(), queried->featureCount());
+    for (size_t i = 0; i < queried->featureCount(); ++i) EXPECT_EQ(uint64_t{i}, queried->getFeature(i)->getID().get<uint64_t>());
+  }
+}
+
+TEST(NativeGeometryTileData, CandidateLimitsFallBackWithoutPartialResults)
+{
+  NativeGeometryTileData data(selectionPayload());
+  auto layer = data.getLayer("");
+  auto filter = selectionFilter(R"(["==",["get","rc"],6])");
+  const std::vector<const style::Filter*> filters{&filter, &filter};
+  for (unsigned restriction = 0; restriction < 4; ++restriction)
+  {
+    FeatureCandidateLimits limits;
+    if (restriction == 0) limits.features = 0;
+    if (restriction == 1) limits.postingBytes = 1;
+    if (restriction == 2) limits.atoms = 0;
+    if (restriction == 3) limits.nodes = 0;
+    featureselection::Statistics statistics;
+    statistics.applied.mode = featureselection::Mode::Indexed;
+    auto selection = data.createFeatureSelection(filters, statistics, false, limits);
+    EXPECT_FALSE(selection);
+    EXPECT_GT(statistics.limitFallbacks, 0u);
+  }
+  FeatureCandidateLimits limits;
+  limits.scratchBytes = 1;
+  featureselection::Statistics statistics;
+  statistics.applied.mode = featureselection::Mode::Verify;
+  auto selection = data.createFeatureSelection(filters, statistics, false, limits);
+  ASSERT_TRUE(selection);
+  const auto result = selection->candidates(filter, style::expression::EvaluationContext(5.0f));
+  EXPECT_FALSE(result.indices);
+  EXPECT_EQ(layer->featureCount(), result.size());
+  EXPECT_EQ(0u, statistics.indexedGroups);
+  EXPECT_EQ(0u, statistics.verifiedGroups);
+  EXPECT_EQ(1u, statistics.limitFallbacks);
+
+  auto unionFilter = selectionFilter(R"(["any",["==",["get","rc"],6],["==",["get","rc"],5]])");
+  statistics = {};
+  statistics.applied.mode = featureselection::Mode::Verify;
+  limits.scratchBytes = 16;
+  selection = data.createFeatureSelection({&unionFilter, &unionFilter}, statistics, false, limits);
+  ASSERT_TRUE(selection);
+  EXPECT_FALSE(selection->candidates(unionFilter, style::expression::EvaluationContext(5.0f)).indices);
+  EXPECT_EQ(12u, statistics.scratchCapacityBytes);
+  EXPECT_EQ(1u, statistics.limitFallbacks);
+  EXPECT_EQ(0u, statistics.verifiedGroups);
+}
+
+TEST(NativeGeometryTileData, CandidateAdmissionAndEmptyResultsAreDistinct)
+{
+  NativeGeometryTileData data(selectionPayload());
+  auto absent = selectionFilter(R"(["==",["get","rc"],999])");
+  auto present = selectionFilter(R"(["==",["get","rc"],6])");
+  featureselection::Statistics statistics;
+  statistics.applied.mode = featureselection::Mode::Indexed;
+  EXPECT_FALSE(data.createFeatureSelection({&absent}, statistics, false));
+  statistics = {};
+  statistics.applied.mode = featureselection::Mode::Verify;
+  auto selection = data.createFeatureSelection({&absent, &present}, statistics, false);
+  ASSERT_TRUE(selection);
+  const auto empty = selection->candidates(absent, style::expression::EvaluationContext(5.0f));
+  ASSERT_TRUE(empty.indices);
+  EXPECT_EQ(0u, empty.size());
+  EXPECT_EQ(1u, statistics.verifiedGroups);
+  EXPECT_EQ(0u, statistics.verificationFailures);
+}
+
+TEST(NativeGeometryTileData, CandidateIndexMatchesShippedStyleFilters)
+{
+  auto root = std::filesystem::path(__FILE__).parent_path();
+  for (unsigned i = 0; i < 4; ++i) root = root.parent_path();
+  root /= "fam/assets/maplibre_styles";
+  ASSERT_TRUE(std::filesystem::exists(root));
+  NativeTileBuilder builder(metadata());
+  for (uint64_t i = 0; i < 100; ++i)
+  {
+    PropertyMap p;
+    for (const auto* key : {"rc", "cat", "lt", "pc", "mt"})
+      if (i % 7) p[key] = int64_t(i % 20);
+    if (i % 3) p["nm"] = std::string("name");
+    if (i % 5) p["rf"] = std::string("ref");
+    builder.appendFinal(FeatureType::Point, {{{100, 100}}}, std::move(p), i);
+  }
+  NativeGeometryTileData data(std::move(builder).seal());
+  auto layer = data.getLayer("");
+  for (const auto* name : {"mvt_day.json", "mvt_night.json", "mvt_overlay_day.json", "mvt_overlay_night.json"})
+  {
+    std::ifstream input(root / name);
+    std::stringstream contents;
+    contents << input.rdbuf();
+    rapidjson::Document style;
+    style.Parse(contents.str().c_str());
+    ASSERT_FALSE(style.HasParseError());
+    std::vector<style::Filter> filters;
+    for (const auto& item : style["layers"].GetArray())
+    {
+      if (!item.HasMember("source") || std::string(item["source"].GetString()) != "automapa-roads"
+          || !item.HasMember("filter")) continue;
+      rapidjson::StringBuffer buffer;
+      rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+      item["filter"].Accept(writer);
+      filters.push_back(selectionFilter(buffer.GetString()));
+    }
+    std::vector<const style::Filter*> pointers;
+    for (const auto& filter : filters) pointers.push_back(&filter);
+    featureselection::Statistics statistics;
+    statistics.applied.mode = featureselection::Mode::Verify;
+    auto selection = data.createFeatureSelection(pointers, statistics, false);
+    ASSERT_TRUE(selection);
+    const auto canonical = metadata().tileID;
+    for (const auto& filter : filters)
+    {
+      const auto candidates = selection->candidates(filter,
+        style::expression::EvaluationContext(5.0f).withCanonicalTileID(&canonical));
+      EXPECT_EQ(selectionMatches(*layer, filter, {layer->featureCount(), std::nullopt}),
+                selectionMatches(*layer, filter, candidates));
+    }
+    EXPECT_EQ(0u, statistics.verificationFailures);
+    EXPECT_GT(statistics.verifiedGroups, 0u);
   }
 }

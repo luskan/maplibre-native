@@ -37,6 +37,9 @@ public:
   explicit NativeGeometryTileData(NativeTilePayloadPtr);
   std::unique_ptr<GeometryTileData> clone() const override;
   std::unique_ptr<GeometryTileLayer> getLayer(const std::string&) const override;
+  std::unique_ptr<FeatureSelection> createFeatureSelection(
+      const std::vector<const style::Filter*>&, featureselection::Statistics&, bool,
+      const FeatureCandidateLimits& = {}) const override;
 
 private:
   NativeTilePayloadPtr payload_;

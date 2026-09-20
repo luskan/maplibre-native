@@ -30,6 +30,13 @@
 using namespace std::numbers;
 
 namespace mln {
+std::unique_ptr<FeatureSelection> GeometryTileData::createFeatureSelection(
+    const std::vector<const style::Filter*>&, featureselection::Statistics&, bool,
+    const FeatureCandidateLimits&) const
+{
+    return {};
+}
+
 namespace {
 
 constexpr std::size_t maxSimpleRingVertices = 32;

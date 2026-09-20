@@ -92,6 +92,7 @@ Sample sample(size_t count = 1)
     }
     setTestTime(start + 40); swapBegin(99); swapEnd(true);
   }
+  while (!tryDrainSwaps(collector(), 32)) {}
   info.endedUs = now(); checkPartition(); return result;
 }
 std::vector<Sample> fill()
@@ -201,6 +202,11 @@ void staleIndexCase(int mode)
     assert(c.publishedIndex[0] == previous);
   }
   loaded.release(); reader.join(); hook = {};
+  if (mode == 2)
+  {
+    assert(result.empty());
+    result = "{\"deferred\":true}";
+  }
   emit("stale_index_" + std::to_string(mode), result);
 }
 void resetCase()
