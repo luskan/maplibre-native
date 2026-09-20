@@ -2,6 +2,7 @@
 
 #include <mln/util/tile_trace.hpp>
 #include <mln/util/feature_selection.hpp>
+#include <mln/util/paint_memo.hpp>
 
 #include <array>
 #include <cstdint>
@@ -83,6 +84,7 @@ struct Profile
   std::array<Group, 8> groups{};
   GroupTotals groupTotals;
   featureselection::Statistics candidates;
+  paintmemo::Statistics paint;
   size_t groupCount = 0;
   bool valid = true;
 };
@@ -107,6 +109,8 @@ public:
   void addGroup(Group) noexcept;
   void selectionPolicy(featureselection::Policy policy) noexcept { value.candidates.applied = policy; }
   void addSelection(const featureselection::Statistics&) noexcept;
+  void paintPolicy(paintmemo::Policy policy) noexcept { value.paint.applied = policy; }
+  void addPaint(const paintmemo::Statistics&) noexcept;
   GroupKey groupKey() const noexcept;
   bool acceptsDeferred(const GroupKey&) const noexcept;
   bool beginDeferred(const GroupKey&) noexcept;

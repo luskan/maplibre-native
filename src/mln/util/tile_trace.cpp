@@ -2634,6 +2634,27 @@ void Tracker::addSelection(const featureselection::Statistics& source) noexcept
   target.scratchCapacityBytes = std::max(target.scratchCapacityBytes, source.scratchCapacityBytes);
   target.cpuAvailable = target.cpuAvailable && source.cpuAvailable;
 }
+void Tracker::addPaint(const paintmemo::Statistics& source) noexcept
+{
+  if (!active()) return;
+  auto& target = value.paint;
+  if (!(target.applied == source.applied)) value.valid = false;
+  target.scopes += source.scopes;
+  target.binders += source.binders;
+  target.eligible += source.eligible;
+  target.admitted += source.admitted;
+  target.calls += source.calls;
+  target.hits += source.hits;
+  target.misses += source.misses;
+  target.bypasses += source.bypasses;
+  target.endpointEvaluations += source.endpointEvaluations;
+  target.verifiedHits += source.verifiedHits;
+  target.mismatches += source.mismatches;
+  target.capacityFallbacks += source.capacityFallbacks;
+  target.budgetFallbacks += source.budgetFallbacks;
+  target.allocationFallbacks += source.allocationFallbacks;
+  target.allocatedBytes += source.allocatedBytes;
+}
 Profile Tracker::result(uint64_t posted) noexcept
 {
   auto result = value;
@@ -2722,6 +2743,7 @@ std::string snapshotJSON(uint64_t captureSession)
   auto& store = timingStore();
   const auto captureGeneration = tiletrace::captureGeneration();
   const auto requestedSelection = featureselection::policy();
+  const auto requestedPaint = paintmemo::policy();
   auto records = std::make_unique<std::array<TimingRecord, TimingCapacity>>();
   uint64_t generation, sequence, overwritten, lost, stale, revision;
   size_t count;
@@ -2737,10 +2759,16 @@ std::string snapshotJSON(uint64_t captureSession)
   const bool coherent = revision == store.revision.load() && generation == store.generation.load()
     && lost == store.lost.load() && stale == store.stale.load() && captureSession == tiletrace::session()
     && captureGeneration == tiletrace::captureGeneration()
-    && requestedSelection.generation == featureselection::policy().generation;
+    && requestedSelection.generation == featureselection::policy().generation
+    && requestedPaint == paintmemo::policy();
   std::ostringstream out;
   out << "{\"version\":1,\"available\":" << (coherent ? "true" : "false")
       << ",\"enabled\":" << (recording ? "true" : "false")
+      << ",\"paintModeRequested\":" << unsigned(requestedPaint.mode)
+      << ",\"paintGenerationRequested\":\"" << requestedPaint.generation << "\""
+      << ",\"paintCacheLiveBytes\":\"" << paintmemo::liveBytes() << "\""
+      << ",\"paintCachePeakBytes\":\"" << paintmemo::peakBytes() << "\""
+      << ",\"paintCacheLimitBytes\":\"" << paintmemo::MemoryLimit << "\""
       << ",\"candidateModeRequested\":" << unsigned(requestedSelection.mode)
       << ",\"candidateGenerationRequested\":\"" << requestedSelection.generation
       << "\",\"generation\":\"" << generation << "\",\"captureGeneration\":\"" << captureGeneration
@@ -2783,6 +2811,25 @@ std::string snapshotJSON(uint64_t captureSession)
       out << '"' << gaps[j] << "\":{\"wallUs\":\"" << gap.wall << "\",\"intervals\":\"" << gap.intervals
           << "\",\"pendingIntervals\":\"" << gap.pendingIntervals << "\",\"stateMask\":" << gap.stateMask << '}';
     }
+    const auto& paint = p.paint;
+    out << "},\"paintMemo\":{\"version\":1,\"mode\":" << unsigned(paint.applied.mode)
+        << ",\"generation\":\"" << paint.applied.generation;
+    out << "\",\"scopes\":\"" << paint.scopes;
+    out << "\",\"binders\":\"" << paint.binders;
+    out << "\",\"eligible\":\"" << paint.eligible;
+    out << "\",\"admitted\":\"" << paint.admitted;
+    out << "\",\"calls\":\"" << paint.calls;
+    out << "\",\"hits\":\"" << paint.hits;
+    out << "\",\"misses\":\"" << paint.misses;
+    out << "\",\"bypasses\":\"" << paint.bypasses;
+    out << "\",\"endpointEvaluations\":\"" << paint.endpointEvaluations;
+    out << "\",\"verifiedHits\":\"" << paint.verifiedHits;
+    out << "\",\"mismatches\":\"" << paint.mismatches;
+    out << "\",\"capacityFallbacks\":\"" << paint.capacityFallbacks;
+    out << "\",\"budgetFallbacks\":\"" << paint.budgetFallbacks;
+    out << "\",\"allocationFallbacks\":\"" << paint.allocationFallbacks;
+    out << "\",\"allocatedBytes\":\"" << paint.allocatedBytes;
+    out << "\"";
     const auto& candidate = p.candidates;
     out << "},\"candidateSelection\":{\"version\":1,\"mode\":" << unsigned(candidate.applied.mode)
         << ",\"generation\":\"" << candidate.applied.generation << "\",\"parses\":\"" << candidate.parses
