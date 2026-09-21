@@ -68,6 +68,23 @@ private:
   layouttiming::Tracker& tracker;
   bool pending = true;
 };
+class ColorStatisticsScope
+{
+public:
+  ColorStatisticsScope(layouttiming::Tracker& tracker_, colormemo::Policy policy)
+    : value{policy}, scope(policy.generation && policy.mode != colormemo::Mode::Off ? &value : nullptr), tracker(tracker_) { value.scopes = 1; }
+  ~ColorStatisticsScope() { finish(); }
+  void finish()
+  {
+    if (pending) tracker.addColor(value);
+    pending = false;
+  }
+private:
+  colormemo::Statistics value;
+  colormemo::Scope scope;
+  layouttiming::Tracker& tracker;
+  bool pending = true;
+};
 } // namespace
 
 GeometryTileWorker::GeometryTileWorker(OptionalActorRef<GeometryTileWorker> self_,
@@ -216,7 +233,8 @@ void GeometryTileWorker::setDataTraced(std::unique_ptr<const GeometryTileData> d
 
 void GeometryTileWorker::setDataSelected(std::unique_ptr<const GeometryTileData> data_,
                                         std::set<std::string> availableImages_, uint64_t correlationID_,
-                                        layouttiming::Seed seed, featureselection::Policy policy, paintmemo::Policy paintPolicy_) {
+                                        layouttiming::Seed seed, featureselection::Policy policy, paintmemo::Policy paintPolicy_,
+                                        colormemo::Policy colorPolicy_) {
     const auto received = seed.generation ? tiletrace::now() : 0;
     retireTiming(layouttiming::Disposition::Replaced);
     layoutTiming.start(seed, received);
@@ -224,6 +242,8 @@ void GeometryTileWorker::setDataSelected(std::unique_ptr<const GeometryTileData>
     layoutTiming.selectionPolicy(policy);
     paintPolicy = paintPolicy_;
     layoutTiming.paintPolicy(paintPolicy);
+    colorPolicy = colorPolicy_;
+    layoutTiming.colorPolicy(colorPolicy);
     TimingHandler timingHandler(*this);
     MLN_TRACE_FUNC();
 
@@ -543,6 +563,7 @@ void GeometryTileWorker::parse() {
     layouttiming::WorkScope parseWork(layoutTiming, layouttiming::Phase::Parse);
     SelectionStatisticsScope candidateStatistics(layoutTiming, selectionPolicy);
     PaintStatisticsScope paintStatistics(layoutTiming, paintPolicy);
+    ColorStatisticsScope colorStatistics(layoutTiming, colorPolicy);
 
     // The layouts created below check the symbols they build; report through the tile's observer,
     // called on this worker thread.
@@ -699,6 +720,7 @@ void GeometryTileWorker::parse() {
     selection.reset();
     candidateStatistics.finish();
     paintStatistics.finish();
+    colorStatistics.finish();
     parseWork.finish();
     finalizeLayout();
 }
@@ -725,6 +747,7 @@ void GeometryTileWorker::finalizeLayout() {
 
     layouttiming::WorkScope finalizeWork(layoutTiming, layouttiming::Phase::Finalize);
     PaintStatisticsScope paintStatistics(layoutTiming, paintPolicy);
+    ColorStatisticsScope colorStatistics(layoutTiming, colorPolicy);
 
     // The layouts check the symbols they build below; report through the tile's observer,
     // called on this worker thread.
@@ -789,8 +812,9 @@ void GeometryTileWorker::finalizeLayout() {
         result->trace.generation = result->trace.id;
     }
     paintStatistics.finish();
+    colorStatistics.finish();
     finalizeWork.finish();
-    result->optimizations = {selectionPolicy, paintPolicy};
+    result->optimizations = {selectionPolicy, paintPolicy, colorPolicy};
     if (layoutTiming.active()) result->timing = layoutTiming.result(tiletrace::now());
     parent.invoke(&GeometryTile::onLayout, std::move(result), correlationID);
 }

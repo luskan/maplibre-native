@@ -614,6 +614,8 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/paint_parameters.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/paint_property_memo.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/paint_property_memo.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/renderer/color_property_memo.cpp
+    ${PROJECT_SOURCE_DIR}/src/mln/renderer/color_property_memo.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/paint_property_binder.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/paint_property_statistics.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/renderer/pattern_atlas.cpp

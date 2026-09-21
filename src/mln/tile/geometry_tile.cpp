@@ -278,7 +278,7 @@ void GeometryTile::setData(std::unique_ptr<const GeometryTileData> data_) {
     const auto seed = layouttiming::enabled() && data_ && data_->trace.id
       ? layouttiming::makeSeed(data_->trace, correlationID) : layouttiming::Seed{};
     worker.self().invoke(&GeometryTileWorker::setDataSelected, std::move(data_), std::move(images),
-                        correlationID, seed, optimizationPolicy.selection, optimizationPolicy.paint);
+                        correlationID, seed, optimizationPolicy.selection, optimizationPolicy.paint, optimizationPolicy.color);
 }
 
 void GeometryTile::reset() {

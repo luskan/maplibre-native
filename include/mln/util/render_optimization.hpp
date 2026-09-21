@@ -2,6 +2,7 @@
 
 #include <mln/util/feature_selection.hpp>
 #include <mln/util/paint_memo.hpp>
+#include <mln/util/color_memo.hpp>
 
 #include <atomic>
 #include <mutex>
@@ -13,16 +14,17 @@ struct RenderOptimizationPolicy
 {
   featureselection::Policy selection;
   paintmemo::Policy paint;
+  colormemo::Policy color;
 
   bool operator==(const RenderOptimizationPolicy& other) const noexcept
   {
     return selection.mode == other.selection.mode && selection.generation == other.selection.generation
-      && paint == other.paint;
+      && paint == other.paint && color == other.color;
   }
 
   static RenderOptimizationPolicy requested() noexcept
   {
-    return {featureselection::policy(), paintmemo::policy()};
+    return {featureselection::policy(), paintmemo::policy(), colormemo::policy()};
   }
 };
 

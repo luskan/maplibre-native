@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mln/renderer/paint_property_memo.hpp>
+#include <mln/renderer/color_property_memo.hpp>
 
 #include <mln/gfx/attribute.hpp>
 #include <mln/gfx/context.hpp>
@@ -24,6 +25,7 @@ namespace mln {
 namespace style {
 struct LineWidth;
 struct LineFloorWidth;
+struct LineColor;
 } // namespace style
 
 // Maps vertex range to feature index
@@ -194,7 +196,8 @@ public:
                                                        float zoom,
                                                        T defaultValue,
                                                        bool useLineWidthZoomCoveringStops = false,
-                                                       bool memoizeWidth = false);
+                                                       bool memoizeWidth = false,
+                                                       bool memoizeColor = false);
 
     PaintPropertyStatistics<T> statistics;
     InterleavedVertexBuffer* interleavedVertexBuffer = nullptr;
@@ -286,15 +289,30 @@ private:
     std::tuple<std::array<uint16_t, 4>, std::array<uint16_t, 4>> constantPatternPositions;
 };
 
+namespace detail {
+template <class T> struct SourceColorMemo {};
+template <> struct SourceColorMemo<Color>
+{
+  bool trackColor = false;
+  std::unique_ptr<colormemo::Cache> colorMemo;
+};
+} // namespace detail
+
 template <class T, class A>
-class SourceFunctionPaintPropertyBinder final : public PaintPropertyBinder<T, T, PossiblyEvaluatedPropertyValue<T>, A> {
+class SourceFunctionPaintPropertyBinder final : public PaintPropertyBinder<T, T, PossiblyEvaluatedPropertyValue<T>, A>,
+                                               private detail::SourceColorMemo<T> {
 public:
     using BaseAttributeType = A;
     using BaseVertex = gfx::VertexType<BaseAttributeType>;
 
-    SourceFunctionPaintPropertyBinder(style::PropertyExpression<T> expression_, T defaultValue_)
+    SourceFunctionPaintPropertyBinder(style::PropertyExpression<T> expression_, T defaultValue_, bool memoizeColor = false)
         : expression(std::move(expression_)),
-          defaultValue(std::move(defaultValue_)) {}
+          defaultValue(std::move(defaultValue_)) {
+        if constexpr (std::is_same_v<T, Color>) {
+            this->trackColor = memoizeColor && colormemo::current();
+            if (this->trackColor) this->colorMemo = colormemo::Cache::create(expression, defaultValue);
+        }
+    }
     ~SourceFunctionPaintPropertyBinder() override {}
 
     void setPatternParameters(const std::optional<ImagePosition>&,
@@ -308,9 +326,17 @@ public:
                               const CanonicalTileID& canonical,
                               const style::expression::Value& formattedSection) override {
         using style::expression::EvaluationContext;
-        auto evaluated = expression.evaluate(
-            EvaluationContext(&feature).withFormattedSection(&formattedSection).withCanonicalTileID(&canonical),
-            defaultValue);
+        auto evaluated = [&] {
+            if constexpr (std::is_same_v<T, Color>) {
+                if (this->trackColor) {
+                    return this->colorMemo ? this->colorMemo->evaluate(feature, canonical, formattedSection)
+                        : colormemo::evaluateUncached(expression, defaultValue, feature, canonical, formattedSection);
+                }
+            }
+            return expression.evaluate(
+                EvaluationContext(&feature).withFormattedSection(&formattedSection).withCanonicalTileID(&canonical),
+                defaultValue);
+        }();
         this->statistics.add(evaluated);
         auto value = attributeValue(evaluated);
 
@@ -632,7 +658,7 @@ struct CreateBinder {
     template <class A>
     static std::unique_ptr<PaintPropertyBinder<T, T, PossiblyEvaluatedType, A>> create(
         const PossiblyEvaluatedType& value, float zoom, T defaultValue, bool useLineWidthZoomCoveringStops,
-        bool memoizeWidth) {
+        bool memoizeWidth, bool memoizeColor) {
         return value.match(
             [&](const T& constant) -> std::unique_ptr<PaintPropertyBinder<T, T, PossiblyEvaluatedType, A>> {
                 return std::make_unique<ConstantPaintPropertyBinder<T, A>>(constant);
@@ -640,7 +666,7 @@ struct CreateBinder {
             [&](const style::PropertyExpression<T>& expression)
                 -> std::unique_ptr<PaintPropertyBinder<T, T, PossiblyEvaluatedType, A>> {
                 if (expression.isZoomConstant()) {
-                    return std::make_unique<SourceFunctionPaintPropertyBinder<T, A>>(expression, defaultValue);
+                    return std::make_unique<SourceFunctionPaintPropertyBinder<T, A>>(expression, defaultValue, memoizeColor);
                 } else {
                     const bool useLineWidthCoveringStops =
                         useLineWidthZoomCoveringStops &&
@@ -661,7 +687,8 @@ struct CreateBinder<T, PossiblyEvaluatedPropertyValue<Faded<T>>> {
            float zoom,
            T defaultValue,
            bool /*useLineWidthZoomCoveringStops*/,
-           bool /*memoizeWidth*/) {
+           bool /*memoizeWidth*/,
+           bool /*memoizeColor*/) {
         return value.match(
             [&](const Faded<T>& constant)
                 -> std::unique_ptr<
@@ -683,9 +710,10 @@ PaintPropertyBinder<T, UniformValueType, PossiblyEvaluatedType, As...>::create(c
                                                                                float zoom,
                                                                                T defaultValue,
                                                                                bool useLineWidthZoomCoveringStops,
-                                                                               bool memoizeWidth) {
+                                                                               bool memoizeWidth,
+                                                                               bool memoizeColor) {
     return CreateBinder<T, PossiblyEvaluatedType>::template create<As...>(
-        value, zoom, defaultValue, useLineWidthZoomCoveringStops, memoizeWidth);
+        value, zoom, defaultValue, useLineWidthZoomCoveringStops, memoizeWidth, memoizeColor);
 }
 
 template <class Attr>
@@ -740,7 +768,8 @@ public:
                                      z,
                                      Ps::defaultValue(),
                                      useLineWidthZoomCoveringStops && detail::isLineWidthPaintProperty<Ps>,
-                                     detail::isLineWidthPaintProperty<Ps> || std::is_same_v<Ps, style::LineFloorWidth>)...) {
+                                     detail::isLineWidthPaintProperty<Ps> || std::is_same_v<Ps, style::LineFloorWidth>,
+                                     std::is_same_v<Ps, style::LineColor>)...) {
         (void)z; // Workaround for https://gcc.gnu.org/bugzilla/show_bug.cgi?id=56958
 
         (([&] {

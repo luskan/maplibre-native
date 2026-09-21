@@ -65,6 +65,7 @@ add_library(
     ${PROJECT_SOURCE_DIR}/test/style/filter.test.cpp
     ${PROJECT_SOURCE_DIR}/test/style/properties.test.cpp
     ${PROJECT_SOURCE_DIR}/test/style/paint_property_memo.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/style/color_property_memo.test.cpp
     ${PROJECT_SOURCE_DIR}/test/style/property_expression.test.cpp
     ${PROJECT_SOURCE_DIR}/test/style/source.test.cpp
     ${PROJECT_SOURCE_DIR}/test/style/style.test.cpp

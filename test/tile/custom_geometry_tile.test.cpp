@@ -30,6 +30,8 @@
 #include <mln/style/native_tile_request_state.hpp>
 #include <mln/tile/native_geometry_tile_data.hpp>
 #include <mln/util/rapidjson.hpp>
+#include <mln/style/conversion/json.hpp>
+#include <mln/style/conversion/property_value.hpp>
 #include <mln/util/layout_timing.hpp>
 #include <mln/util/scoped.hpp>
 #include <mln/annotation/annotation_manager.hpp>
@@ -1717,14 +1719,19 @@ class SelectionRecordingData : public GeometryTileData
 {
 public:
   SelectionRecordingData(NativeTilePayloadPtr payload, std::shared_ptr<std::atomic<uint64_t>> seen_, bool fail_,
-                         std::shared_ptr<std::atomic<uint64_t>> paintSeen_ = {})
-    : data(std::move(payload)), seen(std::move(seen_)), fail(fail_), paintSeen(std::move(paintSeen_)) {}
+                         std::shared_ptr<std::atomic<uint64_t>> paintSeen_ = {},
+                         std::shared_ptr<std::atomic<uint64_t>> colorSeen_ = {})
+    : data(std::move(payload)), seen(std::move(seen_)), fail(fail_), paintSeen(std::move(paintSeen_)),
+      colorSeen(std::move(colorSeen_)) {}
   std::unique_ptr<GeometryTileData> clone() const override { return data.clone(); }
   std::unique_ptr<GeometryTileLayer> getLayer(const std::string& name) const override
   {
     if (paintSeen)
       if (const auto* stats = paintmemo::current())
         paintSeen->store(stats->applied.generation * 4 + static_cast<unsigned>(stats->applied.mode));
+    if (colorSeen)
+      if (const auto* stats = colormemo::current())
+        colorSeen->store(stats->applied.generation * 4 + static_cast<unsigned>(stats->applied.mode));
     return data.getLayer(name);
   }
   std::unique_ptr<FeatureSelection> createFeatureSelection(const std::vector<const Filter*>& filters,
@@ -1739,6 +1746,7 @@ private:
   std::shared_ptr<std::atomic<uint64_t>> seen;
   bool fail;
   std::shared_ptr<std::atomic<uint64_t>> paintSeen;
+  std::shared_ptr<std::atomic<uint64_t>> colorSeen;
 };
 }
 
@@ -1751,6 +1759,7 @@ TEST(CustomGeometryTile, CandidatePolicyPinsTracedAndUntracedDeliveriesAndSurviv
       layouttiming::configure(traced, true);
       Scoped cleanup([] {
         paintmemo::configure(0);
+        colormemo::configure(0);
         featureselection::configure(0);
         layouttiming::configure(false, true);
         tiletrace::configure(false, true);
@@ -1775,19 +1784,24 @@ TEST(CustomGeometryTile, CandidatePolicyPinsTracedAndUntracedDeliveriesAndSurviv
         builder.appendFinal(FeatureType::Point, {{{4096, 4096}}}, {{"rc", int64_t(value)}}, value);
       auto seen = std::make_shared<std::atomic<uint64_t>>(0);
       auto paintSeen = std::make_shared<std::atomic<uint64_t>>(0);
-      auto data = std::make_unique<SelectionRecordingData>(std::move(builder).seal(), seen, fail, paintSeen);
+      auto colorSeen = std::make_shared<std::atomic<uint64_t>>(0);
+      auto data = std::make_unique<SelectionRecordingData>(std::move(builder).seal(), seen, fail, paintSeen, colorSeen);
       data->trace = tiletrace::create(1, 2, receiver.token, 0, 0, 0, 0, 0);
       tiletrace::mark(data->trace, tiletrace::Delivered);
       featureselection::configure(2);
       const auto pinned = featureselection::policy();
       paintmemo::configure(2);
       const auto pinnedPaint = paintmemo::policy();
+      colormemo::configure(2);
+      const auto pinnedColor = colormemo::policy();
       receiver.tile->setData(std::move(data));
       featureselection::configure(0);
       paintmemo::configure(0);
+      colormemo::configure(0);
       ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
       EXPECT_EQ(pinned.generation * 4 + 2, seen->load());
       EXPECT_EQ(pinnedPaint.generation * 4 + 2, paintSeen->load());
+      EXPECT_EQ(pinnedColor.generation * 4 + 2, colorSeen->load());
       std::vector<Feature> queried;
       receiver.tile->querySourceFeatures(queried, {});
       EXPECT_EQ(3u, queried.size());
@@ -1809,12 +1823,14 @@ TEST(CustomGeometryTile, CandidatePolicyPinsTracedAndUntracedDeliveriesAndSurviv
       }
       seen->store(0);
       paintSeen->store(0);
+      colorSeen->store(0);
       unsigned changed = 0;
       receiver.observer.tileChanged = [&](const Tile&) { ++changed; };
       receiver.tile->setLayers(properties);
       ASSERT_TRUE(test.waitUntil([&] { return changed > 0; }));
       EXPECT_EQ(pinned.generation * 4 + 2, seen->load());
       EXPECT_EQ(pinnedPaint.generation * 4 + 2, paintSeen->load());
+      EXPECT_EQ(pinnedColor.generation * 4 + 2, colorSeen->load());
     }
 }
 
@@ -1827,8 +1843,11 @@ TEST(CustomGeometryTile, PaintMemoSurvivesDeferredLinePatternAndPolicyChange)
     layouttiming::configure(true, true);
     paintmemo::configure(mode);
     const auto pinned = paintmemo::policy();
+    colormemo::configure(mode);
+    const auto pinnedColor = colormemo::policy();
     Scoped cleanup([] {
       paintmemo::configure(0);
+      colormemo::configure(0);
       layouttiming::configure(false, true);
       tiletrace::configure(false, true);
     });
@@ -1864,8 +1883,14 @@ TEST(CustomGeometryTile, PaintMemoSurvivesDeferredLinePatternAndPolicyChange)
     const PropertyExpression<float> width(expression::dsl::createExpression(
       R"(["interpolate",["linear"],["zoom"],0,["number",["get","x"]],10,["*",["number",["get","x"]],2]])"));
     line.setLineWidth(width);
+    conversion::Error colorError;
+    auto color = conversion::convertJSON<PropertyValue<Color>>(
+      R"COLOR(["match",["get","x"],3,"rgba(120,60,20,0.7)","#ffffff"])COLOR", colorError, true, false);
+    ASSERT_TRUE(color && color->isExpression()) << colorError.message;
+    line.setLineColor(color->asExpression());
     line.setLinePattern(expression::Image("pattern"));
     auto properties = makeMutable<LineLayerProperties>(staticImmutableCast<LineLayer::Impl>(line.baseImpl));
+    properties->evaluated.get<LineColor>() = PossiblyEvaluatedPropertyValue<Color>(color->asExpression());
     properties->evaluated.get<LineWidth>() = PossiblyEvaluatedPropertyValue<float>(width);
     auto integer = width;
     integer.setUseIntegerZoom(true);
@@ -1885,6 +1910,7 @@ TEST(CustomGeometryTile, PaintMemoSurvivesDeferredLinePatternAndPolicyChange)
     ASSERT_TRUE(test.waitUntil([&] { return images.completions.size() == 1; }));
     EXPECT_FALSE(tile.isComplete());
     paintmemo::configure(0);
+    colormemo::configure(0);
     test.imageManager->addImage(makeMutable<style::Image::Impl>("pattern", PremultipliedImage({16, 16}), 1.0f));
     for (const auto& done : images.completions) done();
     ASSERT_TRUE(test.waitUntil([&] { return !tile.hasPendingRequests(); }));
@@ -1911,6 +1937,16 @@ TEST(CustomGeometryTile, PaintMemoSurvivesDeferredLinePatternAndPolicyChange)
     std::vector<Feature> queried;
     tile.querySourceFeatures(queried, {});
     EXPECT_EQ(2u, queried.size());
+    const auto& colorStats = snapshot["records"][0]["colorMemo"];
+    EXPECT_EQ(mode, colorStats["mode"].GetUint());
+    EXPECT_EQ(std::to_string(pinnedColor.generation), colorStats["generation"].GetString());
+    EXPECT_STREQ("2", colorStats["scopes"].GetString());
+    EXPECT_STREQ(mode ? "2" : "0", colorStats["calls"].GetString());
+    EXPECT_EQ(bool(mode), colorStats["countersEnabled"].GetBool());
+    EXPECT_STREQ(mode ? "1" : "0", colorStats["hits"].GetString());
+    EXPECT_STREQ(mode ? "1" : "0", colorStats["verifiedHits"].GetString());
+    EXPECT_STREQ("0", colorStats["mismatches"].GetString());
+    EXPECT_EQ(nullptr, colormemo::current());
     EXPECT_EQ(nullptr, paintmemo::current());
   }
 }
@@ -1961,7 +1997,8 @@ TEST(CustomGeometryTile, OptimizationPolicyRequiresNativeSourceOptInAndEnabledMo
 {
   featureselection::configure(1);
   paintmemo::configure(1);
-  Scoped restore([] { featureselection::configure(0); paintmemo::configure(0); });
+  colormemo::configure(1);
+  Scoped restore([] { featureselection::configure(0); paintmemo::configure(0); colormemo::configure(0); });
   NativeTileTest test;
   const OverscaledTileID id(0, 0, 0);
   NativeTileTest::Receiver noOptIn(test, id);

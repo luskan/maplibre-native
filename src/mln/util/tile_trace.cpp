@@ -2655,6 +2655,27 @@ void Tracker::addPaint(const paintmemo::Statistics& source) noexcept
   target.allocationFallbacks += source.allocationFallbacks;
   target.allocatedBytes += source.allocatedBytes;
 }
+void Tracker::addColor(const colormemo::Statistics& source) noexcept
+{
+  if (!active()) return;
+  auto& target = value.color;
+  if (!(target.applied == source.applied)) value.valid = false;
+  target.scopes += source.scopes;
+  target.binders += source.binders;
+  target.eligible += source.eligible;
+  target.admitted += source.admitted;
+  target.calls += source.calls;
+  target.hits += source.hits;
+  target.misses += source.misses;
+  target.bypasses += source.bypasses;
+  target.evaluations += source.evaluations;
+  target.verifiedHits += source.verifiedHits;
+  target.mismatches += source.mismatches;
+  target.capacityFallbacks += source.capacityFallbacks;
+  target.budgetFallbacks += source.budgetFallbacks;
+  target.allocationFallbacks += source.allocationFallbacks;
+  target.allocatedBytes += source.allocatedBytes;
+}
 Profile Tracker::result(uint64_t posted) noexcept
 {
   auto result = value;
@@ -2744,6 +2765,7 @@ std::string snapshotJSON(uint64_t captureSession)
   const auto captureGeneration = tiletrace::captureGeneration();
   const auto requestedSelection = featureselection::policy();
   const auto requestedPaint = paintmemo::policy();
+  const auto requestedColor = colormemo::policy();
   auto records = std::make_unique<std::array<TimingRecord, TimingCapacity>>();
   uint64_t generation, sequence, overwritten, lost, stale, revision;
   size_t count;
@@ -2760,7 +2782,7 @@ std::string snapshotJSON(uint64_t captureSession)
     && lost == store.lost.load() && stale == store.stale.load() && captureSession == tiletrace::session()
     && captureGeneration == tiletrace::captureGeneration()
     && requestedSelection.generation == featureselection::policy().generation
-    && requestedPaint == paintmemo::policy();
+    && requestedPaint == paintmemo::policy() && requestedColor == colormemo::policy();
   std::ostringstream out;
   out << "{\"version\":1,\"available\":" << (coherent ? "true" : "false")
       << ",\"enabled\":" << (recording ? "true" : "false")
@@ -2769,6 +2791,11 @@ std::string snapshotJSON(uint64_t captureSession)
       << ",\"paintCacheLiveBytes\":\"" << paintmemo::liveBytes() << "\""
       << ",\"paintCachePeakBytes\":\"" << paintmemo::peakBytes() << "\""
       << ",\"paintCacheLimitBytes\":\"" << paintmemo::MemoryLimit << "\""
+      << ",\"colorModeRequested\":" << unsigned(requestedColor.mode)
+      << ",\"colorGenerationRequested\":\"" << requestedColor.generation << "\""
+      << ",\"colorCacheLiveBytes\":\"" << colormemo::liveBytes() << "\""
+      << ",\"colorCachePeakBytes\":\"" << colormemo::peakBytes() << "\""
+      << ",\"colorCacheLimitBytes\":\"" << colormemo::MemoryLimit << "\""
       << ",\"candidateModeRequested\":" << unsigned(requestedSelection.mode)
       << ",\"candidateGenerationRequested\":\"" << requestedSelection.generation
       << "\",\"generation\":\"" << generation << "\",\"captureGeneration\":\"" << captureGeneration
@@ -2830,6 +2857,25 @@ std::string snapshotJSON(uint64_t captureSession)
     out << "\",\"allocationFallbacks\":\"" << paint.allocationFallbacks;
     out << "\",\"allocatedBytes\":\"" << paint.allocatedBytes;
     out << "\"";
+    const auto& color = p.color;
+    out << "},\"colorMemo\":{\"version\":1,\"mode\":" << unsigned(color.applied.mode)
+        << ",\"generation\":\"" << color.applied.generation;
+    out << "\",\"scopes\":\"" << color.scopes;
+    out << "\",\"binders\":\"" << color.binders;
+    out << "\",\"eligible\":\"" << color.eligible;
+    out << "\",\"admitted\":\"" << color.admitted;
+    out << "\",\"calls\":\"" << color.calls;
+    out << "\",\"hits\":\"" << color.hits;
+    out << "\",\"misses\":\"" << color.misses;
+    out << "\",\"bypasses\":\"" << color.bypasses;
+    out << "\",\"evaluations\":\"" << color.evaluations;
+    out << "\",\"verifiedHits\":\"" << color.verifiedHits;
+    out << "\",\"mismatches\":\"" << color.mismatches;
+    out << "\",\"capacityFallbacks\":\"" << color.capacityFallbacks;
+    out << "\",\"budgetFallbacks\":\"" << color.budgetFallbacks;
+    out << "\",\"allocationFallbacks\":\"" << color.allocationFallbacks;
+    out << "\",\"allocatedBytes\":\"" << color.allocatedBytes;
+    out << "\",\"countersEnabled\":" << (color.applied.mode != colormemo::Mode::Off ? "true" : "false");
     const auto& candidate = p.candidates;
     out << "},\"candidateSelection\":{\"version\":1,\"mode\":" << unsigned(candidate.applied.mode)
         << ",\"generation\":\"" << candidate.applied.generation << "\",\"parses\":\"" << candidate.parses
