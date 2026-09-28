@@ -275,7 +275,7 @@ TEST(NativeGeometryComposer, MovesFinalPropertiesAndIDAndSealsOnlyOnce)
   composer.append(std::move(feature));
   auto payload = std::move(composer).seal();
   ASSERT_EQ(1u, payload->features().size());
-  EXPECT_EQ(text, payload->features()[0].properties.at("string").getString()->data());
+  EXPECT_EQ(text, payload->properties(payload->features()[0]).at("string").getString()->data());
   EXPECT_EQ(id, payload->features()[0].id.get<std::string>().data());
   EXPECT_THROW(composer.append(GeoJSONFeature(point(0, 0))), std::logic_error);
   EXPECT_THROW(std::move(composer).seal(), std::logic_error);

@@ -281,6 +281,8 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
 
     handleWrapJump(static_cast<float>(parameters.transformState.getLatLng().longitude()));
 
+    for (auto& entry : tiles) entry.second->validateCurrentInput();
+
     // Optionally shift the zoom level
     double zoom = util::clamp<double>(parameters.transformState.getZoom() + parameters.tileLodZoomShift,
                                       parameters.transformState.getMinZoom(),
@@ -386,6 +388,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
             return nullptr;
         }
         std::unique_ptr<Tile> tile = cache.pop(tileID);
+        if (tile) tile->validateCurrentInput();
         if (!tile) {
             tile = createTile(tileID, observer);
             if (!tile) return nullptr;

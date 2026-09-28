@@ -21,6 +21,7 @@ class GeometryMemoObserver;
 class NativeTilePayload;
 class NativeRequestState;
 class RenderOptimizationState;
+class NativeTileCache;
 
 namespace style {
 
@@ -33,6 +34,8 @@ struct NativeTileCallbacks
     std::function<NativeRequestBinding(const CanonicalTileID&)> resolve;
     std::function<void(const CanonicalTileID&, const NativeRequestTicket&, tiletrace::Context)> fetch;
     std::function<void(const CanonicalTileID&, const NativeRequestTicket&)> cancel;
+    std::function<void(const CanonicalTileID&, const NativeRequestTicket&, tiletrace::Context, uint64_t)> fetchCached{};
+    std::function<std::string(const NativeRequestTicket&)> descriptor{};
 };
 
 class CustomTileLoader;
@@ -53,6 +56,11 @@ public:
         std::shared_ptr<GeometryMemoObserver> geometryMemoObserver = nullptr;
         TileDataType dataType = TileDataType::LegacyFeatures;
         std::shared_ptr<RenderOptimizationState> renderOptimizations;
+        std::shared_ptr<NativeTileCache> nativeTileCache;
+        // This probe reads current immutable inputs without creating or invalidating a request.
+        std::function<NativeRequestBinding(const CanonicalTileID&)> nativeInputProbe;
+        // Nonzero revisions cover every published input change. Zero forces a full probe.
+        std::function<uint64_t()> nativeInputRevision;
     };
 
     struct Options {
@@ -73,7 +81,7 @@ public:
     void setTracedTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&,
                               tiletrace::Context);
     void setTracedTilePayload(const CanonicalTileID&, const NativeRequestTicket&,
-                             std::shared_ptr<const NativeTilePayload>, tiletrace::Context = {});
+                             std::shared_ptr<const NativeTilePayload>, tiletrace::Context = {}, uint64_t cacheGeneration = 0);
     void setNativeTileError(const CanonicalTileID&, const NativeRequestTicket&,
                            std::exception_ptr, tiletrace::Context = {});
     void invalidateTile(const CanonicalTileID&);

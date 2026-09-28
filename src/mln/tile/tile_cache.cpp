@@ -10,7 +10,9 @@ namespace mln {
 TileCache::~TileCache() {
     MLN_TRACE_FUNC();
 
-    clear();
+    for (auto& item : tiles) deferredRelease(std::move(item.second));
+    tiles.clear();
+    orderedKeys.clear();
     pendingReleases.clear();
 
     std::unique_lock counterLock{deferredSignalLock};
@@ -21,6 +23,17 @@ void TileCache::setSize(size_t size_) {
     MLN_TRACE_FUNC();
 
     size = size_;
+
+    for (auto it = tiles.begin(); it != tiles.end();) {
+      if (it->second->allowOptionalRetention()) {
+        ++it;
+      } else {
+        orderedKeys.remove(it->first);
+        auto tile = std::move(it->second);
+        it = tiles.erase(it);
+        deferredRelease(std::move(tile));
+      }
+    }
 
     while (orderedKeys.size() > size) {
         const auto key = orderedKeys.front();
@@ -35,6 +48,7 @@ void TileCache::setSize(size_t size_) {
     }
 
     assert(orderedKeys.size() <= size);
+    deferPendingReleases();
 }
 
 namespace {
@@ -102,7 +116,7 @@ void TileCache::deferPendingReleases() {
 void TileCache::add(const OverscaledTileID& key, std::unique_ptr<Tile>&& tile) {
     MLN_TRACE_FUNC();
 
-    if (!tile->isRenderable() || !size) {
+    if (!tile->isRenderable() || !size || !tile->allowOptionalRetention()) {
         deferredRelease(std::move(tile));
         return;
     }
@@ -162,6 +176,7 @@ void TileCache::clear() {
     }
     orderedKeys.clear();
     tiles.clear();
+    deferPendingReleases();
 }
 
 } // namespace mln

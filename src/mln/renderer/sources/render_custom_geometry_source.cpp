@@ -2,6 +2,7 @@
 #include <mln/renderer/render_tile.hpp>
 #include <mln/renderer/paint_parameters.hpp>
 #include <mln/tile/custom_geometry_tile.hpp>
+#include <mln/tile/native_tile_cache.hpp>
 
 namespace mln {
 
@@ -15,6 +16,14 @@ RenderCustomGeometrySource::RenderCustomGeometrySource(Immutable<style::CustomGe
 
 const style::CustomGeometrySource::Impl& RenderCustomGeometrySource::impl() const {
     return static_cast<const style::CustomGeometrySource::Impl&>(*baseImpl);
+}
+
+void RenderCustomGeometrySource::reduceNativeTileMemoryUse() {
+  const auto& options = *impl().getTileOptions();
+  if (options.dataType == CustomGeometrySource::TileDataType::NativeGeometry
+      && options.nativeTileCache && options.nativeTileCache->enabled()) {
+    tilePyramid.reduceMemoryUse();
+  }
 }
 
 void RenderCustomGeometrySource::update(Immutable<style::Source::Impl> baseImpl_,

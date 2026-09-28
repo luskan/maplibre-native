@@ -289,6 +289,7 @@ list(APPEND INCLUDE_FILES
     ${PROJECT_SOURCE_DIR}/include/mln/shaders/program_parameters.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/shaders/shader_source.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/storage/database_file_source.hpp
+    ${PROJECT_SOURCE_DIR}/include/mln/storage/native_tile_store.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/storage/file_source_manager.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/storage/file_source.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/storage/network_status.hpp
@@ -414,6 +415,7 @@ list(APPEND INCLUDE_FILES
     ${PROJECT_SOURCE_DIR}/include/mln/util/client_options.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/color.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/compression.hpp
+    ${PROJECT_SOURCE_DIR}/include/mln/util/sha256.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/constants.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/containers.hpp
     ${PROJECT_SOURCE_DIR}/include/mln/util/convert.hpp
@@ -916,6 +918,13 @@ list(APPEND SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mln/style/native_tile_request_state.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/style/native_tile_request_state.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_payload.cpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_codec.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_codec.cpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_memory.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_memory.cpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_cache.hpp
+    ${PROJECT_SOURCE_DIR}/src/mln/tile/native_tile_cache.cpp
+    ${PROJECT_SOURCE_DIR}/src/mln/util/sha256.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/native_geometry_tile_data.hpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/native_geometry_tile_data.cpp
     ${PROJECT_SOURCE_DIR}/src/mln/tile/raster_dem_tile.cpp

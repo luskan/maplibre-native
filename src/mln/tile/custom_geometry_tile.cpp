@@ -53,6 +53,7 @@ CustomGeometryTile::CustomGeometryTile(const OverscaledTileID& overscaledTileID,
 }
 
 CustomGeometryTile::~CustomGeometryTile() {
+    if (nativeCacheEnabled()) releaseUnsharedQueryData();
     if (options->renderOptimizations) options->renderOptimizations->remove(registrationToken);
     tiletrace::finish(traceDemand, tiletrace::Outcome::Teardown);
     mailbox->close();  // Prevent messages from being delivered to destroyed tile (UAF fix)
@@ -132,7 +133,72 @@ bool CustomGeometryTile::acceptsNativeTicket(const NativeRequestTicket& ticket) 
 }
 
 bool CustomGeometryTile::acceptsPendingDataResult() const {
-    return !nativeInputValidity || nativeInputValidity->isCurrent();
+    return !nativeInputValidity || bindingIsCurrent(*nativeInputValidity);
+}
+
+bool CustomGeometryTile::bindingIsCurrent(const NativeInputValidity& input) const {
+  if (!input.isCurrent()) return false;
+  if (!nativeCacheEnabled() || !options->nativeInputProbe) return true;
+  try {
+    const auto current = options->nativeInputProbe(id.canonical);
+    return current.inputs && !current.key.empty() && current.key == input.binding().key;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool CustomGeometryTile::nativeCacheEnabled() const {
+  return options->dataType == style::CustomGeometrySource::TileDataType::NativeGeometry
+    && options->nativeTileCache && options->nativeTileCache->enabled();
+}
+
+void CustomGeometryTile::validateCurrentInput() {
+  if (options->dataType != style::CustomGeometrySource::TileDataType::NativeGeometry) return;
+  if (!nativeCacheEnabled()) {
+    nativeDataCurrent = true;
+    observedInputRevision = 0;
+    return;
+  }
+  uint64_t revision = 0;
+  if (options->nativeInputRevision) {
+    try { revision = options->nativeInputRevision(); }
+    catch (...) {}
+    if (revision && revision == observedInputRevision
+        && (!nativeInputValidity || nativeInputValidity->isCurrent())) return;
+  }
+  bool current = !nativeInputValidity || nativeInputValidity->isCurrent();
+  if (options->nativeInputProbe) {
+    NativeRequestBinding binding;
+    try { binding = options->nativeInputProbe(id.canonical); }
+    catch (...) {}
+    if (!binding.inputs) binding.key.clear();
+    if (binding.key != observedNativeKey) {
+      observedNativeKey = std::move(binding.key);
+      stale = true;
+    }
+    if (nativeInputValidity) {
+      current = current && !observedNativeKey.empty() && observedNativeKey == nativeInputValidity->binding().key;
+    }
+    if (revision) {
+      try { observedInputRevision = revision == options->nativeInputRevision() ? revision : 0; }
+      catch (...) { observedInputRevision = 0; }
+    }
+  }
+  nativeDataCurrent = acceptedNativeValidity && acceptedNativeValidity->isCurrent()
+    && (!options->nativeInputProbe || (!observedNativeKey.empty()
+        && observedNativeKey == acceptedNativeValidity->binding().key));
+  if (!current) {
+    loaded = false;
+    if (nativeInputValidity && !nativeInputValidity->isCurrent() && !nativeTicketInvalidated) {
+      nativeTicketInvalidated = true;
+      stale = true;
+    }
+  }
+}
+
+bool CustomGeometryTile::allowOptionalRetention() const {
+  // Native prepared buckets, query indexes and GPU resources have no complete shared charge yet.
+  return !nativeCacheEnabled();
 }
 
 RenderOptimizationPolicy CustomGeometryTile::renderOptimizationPolicy() const {
@@ -146,13 +212,17 @@ void CustomGeometryTile::optimizationPending(bool error) {
 }
 
 void CustomGeometryTile::optimizationAccepted(RenderOptimizationPolicy policy) {
+    if (options->dataType == style::CustomGeometrySource::TileDataType::NativeGeometry) {
+      acceptedNativeValidity = nativeInputValidity;
+      nativeDataCurrent = acceptedNativeValidity && bindingIsCurrent(*acceptedNativeValidity);
+    }
     if (options->renderOptimizations) options->renderOptimizations->accept(registrationToken, policy);
 }
 
 void CustomGeometryTile::setNativeTileData(NativeTilePayloadPtr payload, NativeRequestTicket ticket,
                                          tiletrace::Context trace) {
     trace.payloadFormat = tiletrace::PayloadFormat::NativeGeometry;
-    if (!acceptsNativeTicket(ticket)) {
+    if (!acceptsNativeTicket(ticket) || !bindingIsCurrent(*ticket.validity())) {
         tiletrace::finish(trace, tiletrace::Outcome::StaleSubmit);
         return;
     }
@@ -168,6 +238,9 @@ void CustomGeometryTile::setNativeTileData(NativeTilePayloadPtr payload, NativeR
     tiletrace::bindDemand(trace);
     data->trace = trace;
     nativeInputValidity = ticket.validity();
+    nativeTicketInvalidated = false;
+    nativeDataCurrent = acceptedNativeValidity && bindingIsCurrent(*acceptedNativeValidity);
+    if (nativeCacheEnabled()) observedNativeKey = ticket.binding().key;
     setData(std::move(data));
 }
 
@@ -193,6 +266,7 @@ void CustomGeometryTile::invalidateTileData() {
 //  Only required tiles make fetchTile requests. Attempt to cancel a tile
 //  that is no longer required.
 void CustomGeometryTile::setNecessity(TileNecessity newNecessity) {
+    validateCurrentInput();
     if (newNecessity != necessity || stale) {
         necessity = newNecessity;
         if (options->renderOptimizations)
@@ -203,11 +277,11 @@ void CustomGeometryTile::setNecessity(TileNecessity newNecessity) {
                 id.canonical.z, id.canonical.x, id.canonical.y, id.overscaledZ, id.wrap, tileTraceRole, tileTraceView,
                 options->dataType == style::CustomGeometrySource::TileDataType::NativeGeometry
                     ? tiletrace::PayloadFormat::NativeGeometry : tiletrace::PayloadFormat::LegacyFeatures);
-            if (stale || !isRenderable()) {
+            if (stale || !isRenderable() || !nativeDataCurrent) {
                 loader.invoke(&style::CustomTileLoader::fetchTracedTile, id, actorRef, registrationToken, traceDemand);
             }
             const auto* retained = retainedTraceForDiagnostics();
-            if (!stale && isRenderable() && retained) {
+            if (!stale && nativeDataCurrent && isRenderable() && retained) {
                 auto reuse = *retained;
                 reuse.demand = traceDemand.id;
                 reuse.view = traceDemand.view;
@@ -220,7 +294,8 @@ void CustomGeometryTile::setNecessity(TileNecessity newNecessity) {
             stale = false;
         } else {
             tiletrace::finish(traceDemand, tiletrace::Outcome::Cancelled);
-            if (!isRenderable()) loader.invoke(&style::CustomTileLoader::cancelTile, id, registrationToken);
+            if (!isRenderable() || (nativeCacheEnabled() && !nativeDataCurrent))
+                loader.invoke(&style::CustomTileLoader::cancelTile, id, registrationToken);
         }
     }
 }

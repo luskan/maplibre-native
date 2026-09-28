@@ -116,6 +116,7 @@ protected:
     virtual void optimizationAccepted(RenderOptimizationPolicy) {}
     void setPendingDataError(std::exception_ptr, tiletrace::Context);
     const GeometryTileData* getData() const;
+    void releaseUnsharedQueryData();
     const tiletrace::Context* retainedTraceForDiagnostics() const {
         return layoutResult ? &layoutResult->trace : nullptr;
     }

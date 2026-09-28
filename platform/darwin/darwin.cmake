@@ -66,6 +66,7 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/platform/default/src/mln/storage/asset_file_source.cpp
         ${PROJECT_SOURCE_DIR}/platform/default/src/mln/storage/mbtiles_file_source.cpp
         ${PROJECT_SOURCE_DIR}/platform/default/src/mln/storage/database_file_source.cpp
+        ${PROJECT_SOURCE_DIR}/platform/default/src/mln/storage/native_tile_database.cpp
         ${PROJECT_SOURCE_DIR}/platform/default/src/mln/storage/file_source_manager.cpp
         ${PROJECT_SOURCE_DIR}/platform/default/src/mln/storage/file_source_request.cpp
         ${PROJECT_SOURCE_DIR}/platform/default/src/mln/storage/local_file_request.cpp

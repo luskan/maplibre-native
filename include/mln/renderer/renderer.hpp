@@ -115,6 +115,8 @@ public:
     void setTileCacheEnabled(bool);
     bool getTileCacheEnabled() const;
     void reduceMemoryUse();
+    // Call on the renderer owner thread. This trims native CPU retention without a graphics context.
+    void reduceNativeTileMemoryUse();
     void clearData();
 
 #if MLN_RENDER_BACKEND_OPENGL

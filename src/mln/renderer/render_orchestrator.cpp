@@ -803,6 +803,10 @@ void RenderOrchestrator::reduceMemoryUse() {
     observer->onInvalidate();
 }
 
+void RenderOrchestrator::reduceNativeTileMemoryUse() {
+  for (const auto& entry : renderSources) entry.second->reduceNativeTileMemoryUse();
+}
+
 void RenderOrchestrator::dumpDebugLogs() {
     MLN_TRACE_FUNC();
 

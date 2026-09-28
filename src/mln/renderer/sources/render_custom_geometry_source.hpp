@@ -8,6 +8,7 @@ namespace mln {
 class RenderCustomGeometrySource final : public RenderTileSource {
 public:
     explicit RenderCustomGeometrySource(Immutable<style::CustomGeometrySource::Impl>, const TaggedScheduler&);
+    void reduceNativeTileMemoryUse() override;
 
     void update(Immutable<style::Source::Impl>,
                 const std::vector<Immutable<style::LayerProperties>>&,

@@ -98,6 +98,7 @@ public:
     void setTileCacheEnabled(bool);
     bool getTileCacheEnabled() const;
     void reduceMemoryUse();
+    void reduceNativeTileMemoryUse();
     void dumpDebugLogs();
     void collectPlacedSymbolData(bool);
     const std::vector<PlacedSymbolData>& getPlacedSymbolsData() const;

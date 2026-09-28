@@ -17,6 +17,7 @@ struct NativeRequestBinding
   // The key describes all inputs that affect output, without request or profiler identity.
   std::string key;
   std::shared_ptr<const void> inputs;
+  std::string persistentKey{};
 };
 
 class NativeInputValidity final

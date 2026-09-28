@@ -22,8 +22,12 @@ std::shared_ptr<NativeRequestState> makeNativeState(const CustomGeometrySource::
 {
     if (options.tileOptions.dataType == CustomGeometrySource::TileDataType::LegacyFeatures) return nullptr;
     if (options.tileOptions.dataType != CustomGeometrySource::TileDataType::NativeGeometry
-        || !options.nativeCallbacks.resolve || !options.nativeCallbacks.fetch || !options.nativeCallbacks.cancel)
+        || !options.nativeCallbacks.resolve
+        || (!options.nativeCallbacks.fetch && !(options.tileOptions.nativeTileCache && options.nativeCallbacks.fetchCached))
+        || !options.nativeCallbacks.cancel)
         throw std::invalid_argument("Native source requires resolve, fetch and cancel callbacks");
+    if (options.tileOptions.nativeTileCache && !options.tileOptions.nativeInputProbe)
+        throw std::invalid_argument("Cached native source requires a current input probe");
     return std::make_shared<NativeRequestState>(options.tileOptions);
 }
 }
@@ -37,7 +41,9 @@ CustomGeometrySource::CustomGeometrySource(std::string id, const Options& option
       nativeState(std::move(state)),
       loader(std::make_unique<Actor<CustomTileLoader>>(
           Scheduler::GetBackground(), options.fetchTileFunction, options.cancelTileFunction, options.tileOptions,
-          options.tracedFetch, options.nativeCallbacks, nativeState)) {}
+          options.tracedFetch, options.nativeCallbacks, nativeState)) {
+    loader->self().invoke(&CustomTileLoader::setActor, loader->self());
+}
 
 CustomGeometrySource::~CustomGeometrySource() {
     if (nativeState) nativeState->retire();
@@ -78,7 +84,8 @@ void CustomGeometrySource::setTracedTileFeatures(const CanonicalTileID& tileID,
 }
 
 void CustomGeometrySource::setTracedTilePayload(const CanonicalTileID& tileID, const NativeRequestTicket& ticket,
-                                               std::shared_ptr<const NativeTilePayload> data, tiletrace::Context trace)
+                                               std::shared_ptr<const NativeTilePayload> data, tiletrace::Context trace,
+                                               uint64_t cacheGeneration)
 {
     trace.payloadFormat = tiletrace::PayloadFormat::NativeGeometry;
     if (!nativeState || ticket.sourceEpoch() != nativeState->sourceEpoch() || !ticket.isCurrent()
@@ -88,7 +95,7 @@ void CustomGeometrySource::setTracedTilePayload(const CanonicalTileID& tileID, c
         return;
     }
     tiletrace::mark(trace, tiletrace::Dispatched);
-    loader->self().invoke(&CustomTileLoader::setTracedTilePayload, tileID, ticket, std::move(data), trace);
+    loader->self().invoke(&CustomTileLoader::setTracedTilePayload, tileID, ticket, std::move(data), trace, cacheGeneration);
 }
 
 void CustomGeometrySource::setNativeTileError(const CanonicalTileID& tileID, const NativeRequestTicket& ticket,

@@ -171,6 +171,10 @@ void Renderer::reduceMemoryUse() {
     impl->orchestrator.reduceMemoryUse();
 }
 
+void Renderer::reduceNativeTileMemoryUse() {
+  impl->orchestrator.reduceNativeTileMemoryUse();
+}
+
 void Renderer::clearData() {
     impl->orchestrator.clearData();
 }

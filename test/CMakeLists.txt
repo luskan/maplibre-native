@@ -90,6 +90,11 @@ add_library(
     ${PROJECT_SOURCE_DIR}/test/tile/geojson_geometry_memo.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/geometry_tile_data.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/native_geometry_tile_data.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/tile/native_tile_codec.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/tile/native_tile_memory.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/tile/native_tile_cache.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/util/sha256.test.cpp
+    ${PROJECT_SOURCE_DIR}/test/storage/native_tile_database.test.cpp
     ${PROJECT_SOURCE_DIR}/test/style/native_tile_request.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/raster_dem_tile.test.cpp
     ${PROJECT_SOURCE_DIR}/test/tile/raster_tile.test.cpp

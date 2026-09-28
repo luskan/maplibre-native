@@ -899,8 +899,10 @@ public:
   std::string key = "first-key";
   std::shared_ptr<const int> inputs = std::make_shared<const int>(1);
   std::vector<NativeRequestTicket> requests;
+  std::vector<uint64_t> cacheGenerations;
   std::vector<NativeRequestTicket> cancellations;
   std::function<NativeRequestBinding(const CanonicalTileID&)> resolver;
+  std::function<std::string(const NativeRequestTicket&)> descriptorResolver;
   std::function<void(const CanonicalTileID&, const NativeRequestTicket&)> cancellationAction;
   NativeTileCallbacks callbacks{
     [&](const CanonicalTileID& tile) {
@@ -910,6 +912,13 @@ public:
     [&](const CanonicalTileID& tile, const NativeRequestTicket& ticket) {
       cancellations.push_back(ticket);
       if (cancellationAction) cancellationAction(tile, ticket);
+    },
+    [&](const CanonicalTileID&, const NativeRequestTicket& ticket, tiletrace::Context, uint64_t generation) {
+      requests.push_back(ticket);
+      cacheGenerations.push_back(generation);
+    },
+    [&](const NativeRequestTicket& ticket) {
+      return descriptorResolver ? descriptorResolver(ticket) : ticket.binding().persistentKey;
     }};
   CustomTileLoader loader{nullptr, nullptr, options, {}, callbacks, state};
   std::shared_ptr<Mailbox> loaderMailbox = std::make_shared<Mailbox>(*Scheduler::GetCurrent());
@@ -934,7 +943,18 @@ public:
     ~Receiver() { observer.tileChanged = {}; observer.tileError = {}; mailbox->close(); }
   };
 
-  NativeTileTest() { setCustomTileLoaderDataCacheEnabled(true); }
+  explicit NativeTileTest(std::shared_ptr<NativeTileCache> cache = {})
+    : options([this, cache = std::move(cache)] {
+        auto value = nativeOptions();
+        value.nativeTileCache = cache;
+        if (cache) value.nativeInputProbe = [this](const CanonicalTileID& id) {
+          return resolver ? resolver(id) : NativeRequestBinding{key, inputs};
+        };
+        return value;
+      }()) {
+    loader.setActor(loaderActor);
+    setCustomTileLoaderDataCacheEnabled(true);
+  }
   ~NativeTileTest() { loaderMailbox->close(); setCustomTileLoaderDataCacheEnabled(cacheWasEnabled); }
 
   void fetch(Receiver& receiver)
@@ -951,8 +971,48 @@ public:
 
   void publish(const CanonicalTileID& tile, const NativeRequestTicket& ticket, NativeTilePayloadPtr value)
   {
-    loader.setTracedTilePayload(tile, ticket, std::move(value), {});
+    loader.setTracedTilePayload(tile, ticket, std::move(value), {}, cacheGenerations.empty() ? 0 : cacheGenerations.back());
   }
+};
+
+struct NativeLoaderStoreData {
+  std::map<std::string, std::string> records;
+  std::atomic<size_t> writes{0};
+};
+
+bool settleNativeCache(NativeTileTest& test, const std::shared_ptr<NativeTileCache>& cache) {
+  auto settled = std::make_shared<std::atomic<bool>>(false);
+  cache->postBackground(cache->policy(), [](NativeTileStore*) { return false; },
+    [settled](bool) { settled->store(true, std::memory_order_release); });
+  return test.waitUntil([&] { return settled->load(std::memory_order_acquire); });
+}
+
+class NativeLoaderStore final : public NativeTileStore {
+public:
+  explicit NativeLoaderStore(std::shared_ptr<NativeLoaderStoreData> value) : data(std::move(value)) {}
+  std::optional<size_t> recordSize(const std::string& key) override {
+    const auto found = data->records.find(key);
+    return found == data->records.end() ? std::nullopt : std::optional<size_t>{found->second.size()};
+  }
+  std::optional<std::string> read(const std::string& key, size_t maximum) override {
+    const auto found = data->records.find(key);
+    if (found == data->records.end() || found->second.size() > maximum) return {};
+    return found->second;
+  }
+  bool write(const std::string& key, const std::string& record) override {
+    data->records[key] = record;
+    data->writes.fetch_add(1, std::memory_order_release);
+    return true;
+  }
+  void erase(const std::string& key) override { data->records.erase(key); }
+  void clear() override { data->records.clear(); }
+  uint64_t storedBytes() override {
+    uint64_t result = 0;
+    for (const auto& entry : data->records) result += entry.second.size();
+    return result;
+  }
+private:
+  std::shared_ptr<NativeLoaderStoreData> data;
 };
 
 std::shared_ptr<GeometryTile::LayoutResult> emptyLayout()
@@ -962,6 +1022,271 @@ std::shared_ptr<GeometryTile::LayoutResult> emptyLayout()
 }
 
 } // namespace
+
+TEST(CustomGeometryTile, NativeCacheCoalescesProducerAndRetainsPayloadWithoutReceivers)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("unused-test-cache", "test-build", true, false);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  setCustomTileLoaderDataCacheEnabled(false);
+  const OverscaledTileID id(0, 0, 0);
+  {
+    NativeTileTest::Receiver first(test, id);
+    NativeTileTest::Receiver second(test, id);
+    test.fetch(first);
+    test.fetch(second);
+    ASSERT_EQ(1u, test.requests.size());
+    ASSERT_EQ(1u, test.cacheGenerations.size());
+    EXPECT_EQ(cache->policy().generation, test.cacheGenerations.front());
+    test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+    ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete() && second.tile->isComplete(); }));
+    EXPECT_FALSE(first.tile->allowOptionalRetention());
+    test.loader.removeTile(id, first.token);
+    test.loader.removeTile(id, second.token);
+  }
+  NativeTileTest::Receiver returned(test, id);
+  test.fetch(returned);
+  EXPECT_EQ(1u, test.requests.size());
+  ASSERT_TRUE(test.waitUntil([&] { return returned.tile->isComplete(); }));
+  EXPECT_EQ("native", returned.tile->data()->getLayer("")->getFeature(0)->getValue("name")->get<std::string>());
+}
+
+TEST(CustomGeometryTile, NativeCacheOldGenerationCanDeliverButCannotRepopulateAfterClear)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("unused-test-cache", "test-build", true, false);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id);
+  test.fetch(first);
+  ASSERT_EQ(1u, test.requests.size());
+  const auto oldGeneration = test.cacheGenerations.front();
+  cache->clear(false);
+  ASSERT_NE(oldGeneration, cache->policy().generation);
+  test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete(); }));
+  EXPECT_FALSE(cache->get("runtime:" + test.key, {id.canonical, test.state->contract()}, cache->policy()));
+  NativeTileTest::Receiver second(test, id);
+  test.fetch(second);
+  ASSERT_EQ(2u, test.requests.size());
+  EXPECT_EQ(cache->policy().generation, test.cacheGenerations.back());
+}
+
+TEST(CustomGeometryTile, NativeCacheCancelledReadCannotStartItsProducerAfterRerequest)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("unused-test-cache", "test-build", true, true);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  test.resolver = [&](const CanonicalTileID&) { return NativeRequestBinding{test.key, test.inputs, "durable-input"}; };
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id);
+  NativeTileTest::Receiver second(test, id);
+  test.fetch(first);
+  test.fetch(second);
+  EXPECT_TRUE(test.requests.empty());
+  test.loader.cancelTile(id, first.token);
+  test.loader.cancelTile(id, second.token);
+  auto drained = std::make_shared<std::atomic<bool>>(false);
+  cache->postBackground(cache->policy(), [](NativeTileStore*) { return false; },
+                       [drained](bool) { drained->store(true, std::memory_order_release); });
+  ASSERT_TRUE(test.waitUntil([&] { return drained->load(std::memory_order_acquire); }));
+  test.loop.runOnce();
+  EXPECT_TRUE(test.requests.empty());
+  test.fetch(first);
+  test.fetch(second);
+  ASSERT_TRUE(test.waitUntil([&] { return test.requests.size() == 1; }));
+  EXPECT_EQ(1u, test.cacheGenerations.size());
+}
+
+TEST(CustomGeometryTile, NativeCacheDisableDuringReadKeepsOneProducerForWaitingReceivers)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("unused-test-cache", "test-build", true, true);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  test.resolver = [&](const CanonicalTileID&) { return NativeRequestBinding{test.key, test.inputs, "durable-input"}; };
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id);
+  NativeTileTest::Receiver second(test, id);
+  test.fetch(first);
+  cache->configure("unused-test-cache", "test-build", false, false);
+  test.fetch(second);
+  EXPECT_TRUE(test.requests.empty());
+  ASSERT_TRUE(test.waitUntil([&] { return test.requests.size() == 1; }));
+  EXPECT_TRUE(test.cacheGenerations.empty());
+  test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete() && second.tile->isComplete(); }));
+  EXPECT_TRUE(first.tile->allowOptionalRetention());
+}
+
+TEST(CustomGeometryTile, NativeCacheDisableDoesNotMoveOldAttemptIntoLegacyCache)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("unused-test-cache", "test-build", true, false);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id);
+  test.fetch(first);
+  ASSERT_EQ(1u, test.cacheGenerations.size());
+  cache->configure("unused-test-cache", "test-build", false, false);
+  test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete(); }));
+  NativeTileTest::Receiver second(test, id);
+  test.fetch(second);
+  EXPECT_EQ(2u, test.requests.size());
+  EXPECT_EQ(1u, test.cacheGenerations.size());
+}
+
+TEST(CustomGeometryTile, NativeCacheDiskHitHasFreshPublicationAndNoProducerFetch)
+{
+  auto stored = std::make_shared<NativeLoaderStoreData>();
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [stored](const std::string&, NativeTileStoreLimits) { return std::make_unique<NativeLoaderStore>(stored); });
+  cache->configure("unused-test-cache", "test-build", true, true);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  test.resolver = [&](const CanonicalTileID&) { return NativeRequestBinding{test.key, test.inputs, "durable-input"}; };
+  const OverscaledTileID id(0, 0, 0);
+  cache->persist("durable-input", test.payload(id.canonical), cache->policy());
+  ASSERT_TRUE(test.waitUntil([&] { return stored->writes.load(std::memory_order_acquire) == 1; }));
+  cache->clear(false);
+  tiletrace::configure(true, true);
+  Scoped cleanup([] { tiletrace::configure(false, true); });
+  NativeTileTest::Receiver receiver(test, id);
+  auto trace = tiletrace::create(1, 2, receiver.token, 0, 0, 0, 0, 0, 2, 0,
+                                tiletrace::PayloadFormat::NativeGeometry);
+  test.loader.fetchTracedTile(id, receiver.actor, receiver.token, trace);
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  ASSERT_TRUE(receiver.tile->data());
+  const auto& delivered = receiver.tile->data()->trace;
+  EXPECT_EQ(tiletrace::Origin::Disk, delivered.origin);
+  EXPECT_NE(0u, delivered.publication);
+  EXPECT_EQ(trace.demand, delivered.demand);
+  EXPECT_EQ(0u, delivered.time[tiletrace::Producer]);
+  EXPECT_TRUE(test.requests.empty());
+}
+
+TEST(CustomGeometryTile, NativeCacheProvenanceReadinessPromotesRuntimePayloadWithoutExtraction)
+{
+  auto stored = std::make_shared<NativeLoaderStoreData>();
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [stored](const std::string&, NativeTileStoreLimits) { return std::make_unique<NativeLoaderStore>(stored); });
+  cache->configure("unused-test-cache", "test-build", true, true);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id);
+  test.fetch(first);
+  ASSERT_EQ(1u, test.requests.size());
+  auto payload = test.payload(id.canonical);
+  test.publish(id.canonical, test.requests.front(), payload);
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete(); }));
+  EXPECT_EQ(0u, stored->writes.load(std::memory_order_acquire));
+  EXPECT_TRUE(test.requests.front().binding().persistentKey.empty());
+  test.descriptorResolver = [](const NativeRequestTicket&) { return std::string("durable-input"); };
+  NativeTileTest::Receiver returned(test, id);
+  test.fetch(returned);
+  ASSERT_TRUE(test.waitUntil([&] {
+    return returned.tile->isComplete() && stored->writes.load(std::memory_order_acquire) == 1;
+  }));
+  EXPECT_EQ(1u, test.requests.size());
+  EXPECT_EQ(payload, cache->get("durable-input", payload->metadata(), cache->policy()));
+}
+
+TEST(CustomGeometryTile, NativeCurrentInputProbeRejectsOldLayoutWithoutRemovingVisualFallback)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("unused-test-cache", "test-build", true, false);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  uint64_t revision = 2;
+  size_t probes = 0;
+  test.options.nativeInputRevision = [&] { return revision; };
+  test.options.nativeInputProbe = [&](const CanonicalTileID&) {
+    ++probes;
+    return NativeRequestBinding{test.key, test.inputs};
+  };
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  test.fetch(receiver);
+  ASSERT_EQ(1u, test.requests.size());
+  test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+  ASSERT_TRUE(receiver.tile->acceptsResult());
+  receiver.tile->validateCurrentInput();
+  const auto previousProbes = probes;
+  receiver.tile->validateCurrentInput();
+  EXPECT_EQ(previousProbes, probes);
+  test.key = "same-config-new-exact-scale";
+  revision += 2;
+  EXPECT_TRUE(test.requests.front().isCurrent());
+  receiver.tile->validateCurrentInput();
+  EXPECT_TRUE(receiver.tile->isRenderable());
+  EXPECT_FALSE(receiver.tile->isComplete());
+  EXPECT_FALSE(receiver.tile->acceptsResult());
+}
+
+TEST(CustomGeometryTile, NativeDisabledCachePreservesProducerAndPreparedReuseBehavior)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  size_t probes = 0;
+  test.options.nativeInputProbe = [&](const CanonicalTileID&) {
+    ++probes;
+    return NativeRequestBinding{test.key, test.inputs};
+  };
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id);
+  NativeTileTest::Receiver second(test, id);
+  test.fetch(first);
+  test.fetch(second);
+  ASSERT_EQ(2u, test.requests.size());
+  EXPECT_TRUE(test.cacheGenerations.empty());
+  test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete() && second.tile->isComplete(); }));
+  test.key = "changed-input";
+  first.tile->validateCurrentInput();
+  EXPECT_TRUE(first.tile->isComplete());
+  EXPECT_TRUE(first.tile->acceptsResult());
+  EXPECT_TRUE(first.tile->allowOptionalRetention());
+  EXPECT_EQ(0u, probes);
+}
+
+TEST(CustomGeometryTile, NativeUnsharedQueryPayloadReleasesWithoutRunningRenderCleanup)
+{
+  auto cache = std::make_shared<NativeTileCache>(NativeTileCache::Config{},
+    [](const std::string&, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("unused-test-cache", "test-build", true, false);
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  const OverscaledTileID id(0, 0, 0);
+  std::weak_ptr<const NativeTilePayload> lifetime;
+  {
+    NativeTileTest::Receiver receiver(test, id);
+    test.fetch(receiver);
+    auto payload = test.payload(id.canonical);
+    lifetime = payload;
+    test.publish(id.canonical, test.requests.front(), std::move(payload));
+    ASSERT_TRUE(test.waitUntil([&] { return receiver.tile->isComplete(); }));
+    cache->clear(false);
+    ASSERT_TRUE(settleNativeCache(test, cache));
+    EXPECT_FALSE(lifetime.expired());
+    test.loader.removeTile(id, receiver.token);
+  }
+  ASSERT_TRUE(test.waitUntil([&] { return lifetime.expired(); }));
+}
 
 TEST(CustomGeometryTile, NativeLayoutTimingFollowsAcceptedWorkerResult)
 {
@@ -1113,7 +1438,7 @@ TEST(CustomGeometryTile, NativeCacheSharesPayloadAcrossWrappedAndOverscaledRecei
     ASSERT_EQ(1u, layer->featureCount());
     auto feature = layer->getFeature(0);
     EXPECT_EQ(&payload->features()[0].geometry, &feature->getGeometries());
-    EXPECT_EQ(payload->features()[0].properties, feature->getProperties());
+    EXPECT_EQ(payload->properties(payload->features()[0]), feature->getProperties());
     std::vector<Feature> queried;
     receiver->tile->querySourceFeatures(queried, {});
     ASSERT_EQ(1u, queried.size());
@@ -1333,7 +1658,7 @@ TEST(CustomGeometryTile, NativeQueuedOppositeFormatsCannotPopulateTheNewLoader)
   CircleLayer layer("circle", "source");
   legacy.setLayers({makeMutable<CircleLayerProperties>(staticImmutableCast<CircleLayer::Impl>(layer.baseImpl))});
   legacyLoader.fetchTile(id, receiverActor, nextCustomTileRegistrationToken());
-  loaderActor.invoke(&CustomTileLoader::setTracedTilePayload, id.canonical, ticket, nativePayload, tiletrace::Context{});
+  loaderActor.invoke(&CustomTileLoader::setTracedTilePayload, id.canonical, ticket, nativePayload, tiletrace::Context{}, uint64_t{0});
   loaderActor.invoke(&CustomTileLoader::setTileFeatures, id.canonical, geographic);
   ASSERT_TRUE(test.waitUntil([&] { return legacy.isComplete(); }));
   EXPECT_EQ("legacy", legacy.data()->getLayer("")->getFeature(0)->getValue("name")->get<std::string>());

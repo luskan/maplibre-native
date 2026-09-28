@@ -5,6 +5,7 @@
 #include <mln/tile/tile_id.hpp>
 #include <mln/util/geojson.hpp>
 #include <mln/tile/native_tile_payload.hpp>
+#include <mln/tile/native_tile_cache.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +60,7 @@ public:
                      NativeTileCallbacks nativeCallbacks = {}, std::shared_ptr<NativeRequestState> nativeState = nullptr);
     ~CustomTileLoader();
     uint64_t nativeSourceEpoch() const noexcept;
+    void setActor(ActorRef<CustomTileLoader>);
 
     void fetchTile(const OverscaledTileID& tileID,
                    const ActorRef<CustomGeometryTile>& tileRef,
@@ -66,7 +68,8 @@ public:
     void fetchTracedTile(const OverscaledTileID&, const ActorRef<CustomGeometryTile>&,
                          RegistrationToken, tiletrace::Context);
     void setTracedTileFeatures(const CanonicalTileID&, std::shared_ptr<const FeatureCollection>, tiletrace::Context);
-    void setTracedTilePayload(const CanonicalTileID&, NativeRequestTicket, NativeTilePayloadPtr, tiletrace::Context);
+    void setTracedTilePayload(const CanonicalTileID&, NativeRequestTicket, NativeTilePayloadPtr, tiletrace::Context,
+                             uint64_t cacheGeneration = 0);
     void setNativeTileError(const CanonicalTileID&, NativeRequestTicket, std::exception_ptr, tiletrace::Context);
     void cancelTile(const OverscaledTileID& tileID, RegistrationToken token);
 
@@ -88,6 +91,7 @@ private:
         // stopped once no registration wants the tile any more.
         bool wantsData;
         tiletrace::Context trace;
+        bool awaitingData = true;
     };
 
     // One canonical tile can feed several receivers, so they share one producer fetch.
@@ -100,6 +104,9 @@ private:
         NativeRequestTicket nativeTicket;
         // Protect successful publication traces from duplicate producer errors.
         std::optional<tiletrace::ID> nativePublication;
+        bool fetchPending = false;
+        std::shared_ptr<std::atomic<bool>> cacheRead;
+        NativeTileCache::Policy cachePolicy;
     };
     struct NativeCancellation {
         CanonicalTileID tile;
@@ -113,8 +120,16 @@ private:
     void notifyNativeCancellations(std::vector<NativeCancellation>&) noexcept;
     static tiletrace::Context deliveryTrace(const CanonicalTileID&, const tiletrace::Context&, const TileRegistration&);
     void publish(const CanonicalTileID&, ProcessedTilePayload, tiletrace::Context,
-                 NativeRequestTicket = {}, bool traced = true);
+                 NativeRequestTicket = {}, bool traced = true, uint64_t cacheGeneration = 0,
+                 bool persistNative = true);
     bool accepts(const CanonicalTileID&, const NativeRequestTicket&) const;
+    std::string persistentDescriptor(const NativeRequestTicket&) const;
+    void fetchCachedTile(const CanonicalTileID&, NativeRequestTicket, tiletrace::Context);
+    void cacheReadComplete(CanonicalTileID, NativeRequestTicket, tiletrace::Context,
+                           std::shared_ptr<std::atomic<bool>>, NativeTilePayloadPtr, bool fromDisk);
+    void startNativeProducer(const CanonicalTileID&, NativeRequestTicket, tiletrace::Context);
+    void publishCached(const CanonicalTileID&, NativeRequestTicket, NativeTilePayloadPtr,
+                       tiletrace::Context, tiletrace::Origin, bool persist = false);
     // Both expect dataMutex to be held.
     void releaseProducerIfUnwanted(const CanonicalTileID& tileID, CanonicalEntry& entry,
                                   std::vector<NativeCancellation>&);
@@ -127,6 +142,7 @@ private:
     CustomGeometrySource::TileOptions tileOptions;
     NativeTileCallbacks nativeCallbacks;
     std::shared_ptr<NativeRequestState> nativeState;
+    std::optional<ActorRef<CustomTileLoader>> actor;
     std::unordered_map<CanonicalTileID, CanonicalEntry> tileCallbackMap;
     // Keep around processed tile-local geometry to serve back for wrapped and over-zoomed tiles.
 public:

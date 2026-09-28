@@ -8,7 +8,7 @@ namespace mln
 class NativeGeometryTileFeature final : public GeometryTileFeature
 {
 public:
-  explicit NativeGeometryTileFeature(const NativeFeatureRecord&);
+  NativeGeometryTileFeature(const NativeTilePayload&, const NativeFeatureRecord&);
   FeatureType getType() const override;
   std::optional<Value> getValue(const std::string&) const override;
   const PropertyMap& getProperties() const override;
@@ -16,6 +16,7 @@ public:
   const GeometryCollection& getGeometries() const override;
 
 private:
+  const NativeTilePayload& payload_;
   const NativeFeatureRecord& feature_;
 };
 

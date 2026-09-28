@@ -14,6 +14,7 @@
 #include <rapidjson/writer.h>
 
 #include <array>
+#include <bit>
 #include <barrier>
 #include <future>
 #include <limits>
@@ -171,7 +172,7 @@ TEST(NativeGeometryTileData, SharesFinalGeometryAcrossLayersClonesAndAccesses)
     const auto& record = payload->features()[i];
     EXPECT_EQ(&record.geometry, &a->getGeometries());
     EXPECT_EQ(&record.geometry, &b->getGeometries());
-    EXPECT_EQ(&record.properties, &b->getProperties());
+    EXPECT_EQ(&payload->properties(record), &b->getProperties());
     for (int access = 0; access < 10; ++access)
     {
       EXPECT_EQ(record.geometry.data(), a->getGeometries().data());
@@ -259,7 +260,7 @@ TEST(NativeGeometryTileData, EmptyPayloadIsValidAndAbsentPayloadIsRejected)
   EXPECT_THROW(NativeGeometryTileLayer{nullptr}, std::invalid_argument);
 }
 
-TEST(NativeTilePayload, MovesGeometryPropertiesAndLongIDsIntoSealedStorage)
+TEST(NativeTilePayload, CompactsGeometryAndMovesPropertiesAndLongIDsIntoSealedStorage)
 {
   NativeTileBuilder builder(metadata());
   GeometryCollection geometry;
@@ -271,12 +272,8 @@ TEST(NativeTilePayload, MovesGeometryPropertiesAndLongIDsIntoSealedStorage)
   geometry.push_back(std::move(part));
   auto values = properties();
   std::string id(100, 'i');
-  const auto* parts = geometry.data();
-  const auto* coordinates = geometry[0].data();
   const auto* property = &values.at("object");
   const auto* idCharacters = id.data();
-  const auto geometryBytes =
-      geometry.capacity() * sizeof(GeometryCoordinates) + geometry[0].capacity() * sizeof(GeometryCoordinate);
   builder.appendFinal(FeatureType::LineString, std::move(geometry), std::move(values), std::move(id));
   for (int i = 0; i < 20; ++i)
   {
@@ -284,26 +281,179 @@ TEST(NativeTilePayload, MovesGeometryPropertiesAndLongIDsIntoSealedStorage)
   }
   auto payload = std::move(builder).seal();
   const auto& first = payload->features()[0];
-  EXPECT_EQ(parts, first.geometry.data());
-  EXPECT_EQ(coordinates, first.geometry[0].data());
-  EXPECT_EQ(property, &first.properties.at("object"));
+  EXPECT_EQ(1u, first.geometry.capacity());
+  EXPECT_EQ(2u, first.geometry[0].capacity());
+  EXPECT_EQ(property, &payload->properties(first).at("object"));
   EXPECT_EQ(idCharacters, first.id.get<std::string>().data());
   const auto& stats = payload->statistics();
+  const auto geometryBytes = sizeof(GeometryCoordinates) + 2 * sizeof(GeometryCoordinate);
   EXPECT_EQ(21u, stats.featureCount);
   EXPECT_EQ(1u, stats.partCount);
   EXPECT_EQ(2u, stats.coordinateCount);
   EXPECT_EQ(properties().size(), stats.propertyCount);
+  EXPECT_EQ(2u, stats.propertySetCount);
   EXPECT_EQ(geometryBytes, stats.geometryBytes);
   EXPECT_EQ(geometryBytes, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::LineString)]);
   EXPECT_EQ(0u, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::Unknown)]);
   EXPECT_EQ(0u, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::Point)]);
   EXPECT_EQ(0u, stats.featureTypeGeometryBytes[static_cast<std::size_t>(FeatureType::Polygon)]);
   EXPECT_GE(stats.recordBytes, 21u * sizeof(NativeFeatureRecord));
-  EXPECT_GT(stats.propertyBytes, first.properties.size() * sizeof(PropertyMap::value_type));
+  EXPECT_GT(stats.propertyBytes, payload->properties(first).size() * sizeof(PropertyMap::value_type));
   EXPECT_EQ(first.id.get<std::string>().capacity() + 1, stats.identifierBytes);
   EXPECT_EQ(
       sizeof(NativeTilePayload) + stats.recordBytes + stats.geometryBytes + stats.propertyBytes + stats.identifierBytes,
       stats.estimatedRetainedBytes);
+}
+
+TEST(NativeTilePayload, RepeatedPropertiesShareOneOwnedMapAndReduceStorage)
+{
+  auto build = [](bool pooled)
+  {
+    NativeTileBuildOptions options;
+    if(!pooled) options.propertyIndexSlots = 0;
+    NativeTileBuilder builder(metadata(), options);
+    for(size_t i = 0; i < 10000; ++i)
+      builder.appendFinal(FeatureType::Polygon, GeometryCollection{{{0, 0}, {10, 0}, {10, 10}, {0, 0}}},
+        PropertyMap{{"rc", int64_t(6)}, {"cat", int64_t(2)}, {"lt", int64_t(3)},
+                    {"nm", "common-name"}}, uint64_t(i));
+    return std::move(builder).seal();
+  };
+  const auto pooled = build(true), unique = build(false);
+  ASSERT_EQ(pooled->propertySets().size(), 1u);
+  ASSERT_EQ(unique->propertySets().size(), 10000u);
+  EXPECT_EQ(pooled->statistics().propertyCount, 40000u);
+  EXPECT_LT(pooled->statistics().propertyBytes * 100, unique->statistics().propertyBytes);
+  EXPECT_LT(pooled->cacheMemoryCharge() * 2, unique->cacheMemoryCharge());
+  NativeGeometryTileData data(pooled);
+  auto layer = data.getLayer("");
+  EXPECT_EQ(&layer->getFeature(0)->getProperties(), &layer->getFeature(9999)->getProperties());
+  EXPECT_EQ(layer->getFeature(9999)->getID(), FeatureIdentifier(uint64_t(9999)));
+  std::cout << "[compact fixture] features=10000 pooled_charge=" << pooled->cacheMemoryCharge()
+            << " unpooled_charge=" << unique->cacheMemoryCharge() << '\n';
+}
+
+TEST(NativeTilePayload, PropertyIdentityPreservesTypesSignedZeroAndNaNBits)
+{
+  const auto nanA = std::bit_cast<double>(uint64_t(0x7ff8000000000001ULL));
+  const auto nanB = std::bit_cast<double>(uint64_t(0x7ff8000000000002ULL));
+  std::vector<Value> values{int64_t(6), uint64_t(6), 6.0, 0.0, -0.0, nanA, nanA, nanB};
+  NativeTileBuilder builder(metadata());
+  for(auto& value : values)
+    builder.appendFinal(FeatureType::Unknown, {}, PropertyMap{{"v", std::move(value)}}, NullValue{});
+  builder.appendFinal(FeatureType::Unknown, {}, {}, NullValue{});
+  builder.appendFinal(FeatureType::Unknown, {}, PropertyMap{{"v", NullValue{}}}, NullValue{});
+  const auto tile = std::move(builder).seal();
+  EXPECT_EQ(tile->propertySets().size(), 9u);
+  EXPECT_EQ(tile->features()[5].propertySet, tile->features()[6].propertySet);
+  EXPECT_NE(tile->features()[3].propertySet, tile->features()[4].propertySet);
+  EXPECT_NE(tile->features()[8].propertySet, tile->features()[9].propertySet);
+  EXPECT_TRUE(tile->properties(tile->features()[0]).at("v").is<int64_t>());
+  EXPECT_TRUE(tile->properties(tile->features()[1]).at("v").is<uint64_t>());
+  EXPECT_EQ(std::bit_cast<uint64_t>(tile->properties(tile->features()[7]).at("v").get<double>()),
+            std::bit_cast<uint64_t>(nanB));
+}
+
+TEST(NativeTilePayload, InternHitReleasesTransferredDuplicateStorageImmediately)
+{
+  PropertyMap values;
+  values.reserve(1024);
+  values.emplace(std::string(100, 'k'), std::string(500, 'v'));
+  values.emplace("nested", Value::array_type{PropertyMap{{"zero", -0.0}, {"null", NullValue{}}}});
+  PropertyMap duplicate = values;
+  const auto* pooledValue = &values.begin()->second;
+  NativeTileBuilder builder(metadata());
+  builder.appendFinal(FeatureType::Unknown, {}, std::move(values), NullValue{});
+  builder.appendFinal(FeatureType::Unknown, {}, std::move(duplicate), NullValue{});
+  EXPECT_TRUE(duplicate.empty());
+  EXPECT_EQ(duplicate.bucket_count(), PropertyMap{}.bucket_count());
+  const auto tile = std::move(builder).seal();
+  ASSERT_EQ(tile->propertySets().size(), 1u);
+  EXPECT_EQ(&tile->propertySets()[0].begin()->second, pooledValue);
+  EXPECT_EQ(tile->properties(tile->features()[1]).at(std::string(100, 'k')).get<std::string>(),
+            std::string(500, 'v'));
+  const auto& nested = tile->propertySets()[0].at("nested").get<Value::array_type>()[0].get<PropertyMap>();
+  EXPECT_EQ(std::bit_cast<uint64_t>(nested.at("zero").get<double>()), std::bit_cast<uint64_t>(-0.0));
+}
+
+TEST(NativeTilePayload, BoundedLookupSurvivesCollisionsSaturationAndPoolGrowth)
+{
+  NativeTileBuildOptions options;
+  options.propertyIndexSlots = 1;
+  options.propertyIndexProbes = 1;
+  NativeTileBuilder builder(metadata(), options);
+  for(size_t i = 0; i < 200; ++i)
+    builder.appendFinal(FeatureType::Unknown, {}, PropertyMap{{"n", uint64_t(i)}}, uint64_t(i));
+  builder.appendFinal(FeatureType::Unknown, {}, PropertyMap{{"n", uint64_t(199)}}, NullValue{});
+  const auto tile = std::move(builder).seal();
+  ASSERT_EQ(tile->propertySets().size(), 200u);
+  for(size_t i = 0; i < 200; ++i)
+    EXPECT_EQ(tile->properties(tile->features()[i]).at("n").get<uint64_t>(), i);
+  EXPECT_EQ(tile->features()[199].propertySet, tile->features()[200].propertySet);
+}
+
+TEST(NativeTilePayload, SharingPreservesObjectOrderUsedByExpressions)
+{
+  PropertyMap first, second;
+  first.reserve(17);
+  second.reserve(17);
+  for(int i = 0; i < 8; ++i) first.emplace("key" + std::to_string(i), int64_t(i));
+  for(int i = 7; i >= 0; --i) second.emplace("key" + std::to_string(i), int64_t(i));
+  auto stringify = [](const PropertyMap& value)
+  {
+    return style::expression::toString(style::expression::toExpressionValue(Value(value)));
+  };
+  const auto beforeA = stringify(first), beforeB = stringify(second);
+  std::vector<std::string> orderA, orderB;
+  for(const auto& [key, value] : first) orderA.push_back(key);
+  for(const auto& [key, value] : second) orderB.push_back(key);
+  NativeTileBuilder builder(metadata());
+  builder.appendFinal(FeatureType::Unknown, {}, std::move(first), NullValue{});
+  builder.appendFinal(FeatureType::Unknown, {}, std::move(second), NullValue{});
+  const auto tile = std::move(builder).seal();
+  EXPECT_EQ(stringify(tile->properties(tile->features()[0])), beforeA);
+  EXPECT_EQ(stringify(tile->properties(tile->features()[1])), beforeB);
+  if(orderA != orderB) EXPECT_NE(tile->features()[0].propertySet, tile->features()[1].propertySet);
+}
+
+TEST(NativeTilePayload, AllocationFailuresCannotPublishPartiallyChangedBuilders)
+{
+  for(size_t failure = 1; failure <= 4; ++failure)
+  {
+    size_t calls = 0;
+    NativeTileBuildOptions options;
+    options.compact = false;
+    options.allocationGate = [&] { if(++calls == failure) throw std::bad_alloc(); };
+    NativeTileBuilder builder(metadata(), options);
+    if(failure < 4)
+      EXPECT_THROW(builder.appendFinal(FeatureType::Point, {{{1, 2}}}, PropertyMap{{"v", true}}, NullValue{}),
+                   std::bad_alloc);
+    else
+    {
+      builder.appendFinal(FeatureType::Point, {{{1, 2}}}, PropertyMap{{"v", true}}, NullValue{});
+      EXPECT_THROW(std::move(builder).seal(), std::bad_alloc);
+    }
+    EXPECT_THROW(std::move(builder).seal(), std::logic_error);
+    EXPECT_THROW(builder.appendFinal(FeatureType::Unknown, {}, {}, NullValue{}), std::logic_error);
+  }
+}
+
+TEST(NativeTilePayload, OptionalGeometryCompactionFailurePreservesValidData)
+{
+  size_t calls = 0;
+  NativeTileBuildOptions options;
+  options.propertyIndexSlots = 0;
+  options.allocationGate = [&] { if(++calls == 2) throw std::bad_alloc(); };
+  NativeTileBuilder builder(metadata(), options);
+  GeometryCoordinates coordinates;
+  coordinates.reserve(100);
+  coordinates.emplace_back(1, 2);
+  GeometryCollection geometry;
+  geometry.push_back(std::move(coordinates));
+  builder.appendFinal(FeatureType::Point, std::move(geometry), {}, NullValue{});
+  const auto tile = std::move(builder).seal();
+  EXPECT_EQ(tile->features()[0].geometry[0][0], GeometryCoordinate(1, 2));
+  EXPECT_EQ(tile->features()[0].geometry[0].capacity(), 100u);
+  EXPECT_GE(tile->statistics().geometryBytes, 100 * sizeof(GeometryCoordinate));
 }
 
 TEST(NativeTilePayload, RetainsGenericFeatureTypeCounts)

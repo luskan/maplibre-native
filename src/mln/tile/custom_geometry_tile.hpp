@@ -45,6 +45,8 @@ public:
     void invalidateTileData();
 
     void setNecessity(TileNecessity) final;
+    void validateCurrentInput() override;
+    bool allowOptionalRetention() const override;
 
     void querySourceFeatures(std::vector<Feature>& result, const SourceQueryOptions&) override;
 
@@ -56,7 +58,14 @@ protected:
 
 private:
     bool acceptsNativeTicket(const NativeRequestTicket&) const;
+    bool bindingIsCurrent(const NativeInputValidity&) const;
+    bool nativeCacheEnabled() const;
+    std::string observedNativeKey;
+    bool nativeTicketInvalidated = false;
+    bool nativeDataCurrent = true;
+    uint64_t observedInputRevision = 0;
     std::shared_ptr<const NativeInputValidity> nativeInputValidity;
+    std::shared_ptr<const NativeInputValidity> acceptedNativeValidity;
     const uint64_t nativeSourceEpoch;
     tiletrace::Context traceDemand;
     bool stale = true;

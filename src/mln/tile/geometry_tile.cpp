@@ -232,9 +232,14 @@ GeometryTile::~GeometryTile() {
     if (layoutResult) {
         threadPool.runOnRenderThread(
             [layoutResult_{std::move(layoutResult)}, atlasTextures_{std::move(atlasTextures)}]() {
-                layoutResult_->dynamicTextureAtlas->removeUnusedDynamicTextures();
+                if (layoutResult_->dynamicTextureAtlas)
+                    layoutResult_->dynamicTextureAtlas->removeUnusedDynamicTextures();
             });
     }
+}
+
+void GeometryTile::releaseUnsharedQueryData() {
+  if (layoutResult && layoutResult.use_count() == 1) layoutResult->featureIndex.reset();
 }
 
 void GeometryTile::cancel() {

@@ -109,6 +109,7 @@ public:
     virtual void setFastPFOREnabled(bool) {}
 
     virtual void reduceMemoryUse() = 0;
+    virtual void reduceNativeTileMemoryUse() {}
 
     virtual void dumpDebugLogs() const = 0;
 

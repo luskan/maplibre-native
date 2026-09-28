@@ -72,6 +72,9 @@ public:
 
     virtual void setUpdateParameters(const TileUpdateParameters&) {}
 
+    virtual void validateCurrentInput() {}
+    virtual bool allowOptionalRetention() const { return true; }
+
     // Mark this tile as no longer needed and cancel any pending work.
     virtual void cancel() = 0;
 

@@ -7,7 +7,8 @@
 namespace mln
 {
 
-NativeGeometryTileFeature::NativeGeometryTileFeature(const NativeFeatureRecord& feature) : feature_(feature) {}
+NativeGeometryTileFeature::NativeGeometryTileFeature(const NativeTilePayload& payload, const NativeFeatureRecord& feature)
+  : payload_(payload), feature_(feature) {}
 
 FeatureType NativeGeometryTileFeature::getType() const
 {
@@ -16,13 +17,14 @@ FeatureType NativeGeometryTileFeature::getType() const
 
 std::optional<Value> NativeGeometryTileFeature::getValue(const std::string& key) const
 {
-  const auto found = feature_.properties.find(key);
-  return found != feature_.properties.end() ? std::optional<Value>(found->second) : std::nullopt;
+  const auto& values = payload_.properties(feature_);
+  const auto found = values.find(key);
+  return found != values.end() ? std::optional<Value>(found->second) : std::nullopt;
 }
 
 const PropertyMap& NativeGeometryTileFeature::getProperties() const
 {
-  return feature_.properties;
+  return payload_.properties(feature_);
 }
 
 FeatureIdentifier NativeGeometryTileFeature::getID() const
@@ -51,7 +53,7 @@ std::size_t NativeGeometryTileLayer::featureCount() const
 std::unique_ptr<GeometryTileFeature> NativeGeometryTileLayer::getFeature(std::size_t i) const
 {
   assert(i < featureCount());
-  return std::make_unique<NativeGeometryTileFeature>(payload_->features()[i]);
+  return std::make_unique<NativeGeometryTileFeature>(*payload_, payload_->features()[i]);
 }
 
 std::string NativeGeometryTileLayer::getName() const
@@ -225,7 +227,7 @@ public:
       {
         auto& values = postings[key];
         if (values.empty()) continue;
-        const auto& properties = payload->features()[i].properties;
+        const auto& properties = payload->properties(payload->features()[i]);
         const auto property = properties.find(CandidateKeys[key]);
         if (property == properties.end()) continue;
         const auto number = candidateNumber(property->second);
@@ -331,7 +333,7 @@ private:
   }
   bool matches(size_t index, const style::Filter& filter, style::expression::EvaluationContext context) const
   {
-    NativeGeometryTileFeature feature(payload->features()[index]);
+    NativeGeometryTileFeature feature(*payload, payload->features()[index]);
     context.feature = &feature;
     return filter(context);
   }
