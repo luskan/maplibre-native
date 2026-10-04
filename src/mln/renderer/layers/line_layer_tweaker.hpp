@@ -23,6 +23,7 @@ class LineLayerTweaker : public LayerTweaker {
 public:
     enum class LineType {
         Simple,
+        Road,
         Gradient,
         Pattern,
         SDF

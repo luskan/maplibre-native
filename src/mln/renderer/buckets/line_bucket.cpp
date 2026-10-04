@@ -7,6 +7,9 @@
 
 #include <cassert>
 #include <utility>
+#include <cmath>
+#include <rapidjson/document.h>
+#include <mutex>
 
 namespace mln {
 
@@ -40,6 +43,54 @@ void LineBucket::addFeature(const GeometryTileFeature& feature,
                             const PatternLayerMap& patternDependencies,
                             std::size_t index,
                             const CanonicalTileID& canonical) {
+    if (layout.get<LineRoadComposite>()) {
+        if (auto value = feature.getValue("road_composite_guards")) {
+            auto const* encoded = value->getString();
+            rapidjson::Document table;
+            if (encoded && encoded->size() <= 131072) table.Parse(encoded->c_str());
+            if (encoded && !table.HasParseError() && table.IsArray() && table.Size() >= 4
+                && table.Size() <= 2052 && table.Size() % 2 == 0) {
+                if (roadGuardTableSeen && roadGuardKey != *encoded) roadGuardTableInvalid = true;
+                std::vector<Point<double>> points;
+                auto project = [&](double lon, double lat) {
+                    double const scale = std::ldexp(8192.0, canonical.z);
+                    double const y = (0.5 - std::log(std::tan(0.7853981633974483
+                        + lat * 0.008726646259971648)) / 6.283185307179586) * scale;
+                    return Point<double>{(lon / 360.0 + 0.5) * scale - canonical.x * 8192.0,
+                        y - canonical.y * 8192.0};
+                };
+                for (rapidjson::SizeType i = 0; i < table.Size(); i += 2) {
+                    if (!table[i].IsNumber() || !table[i + 1].IsNumber()) {
+                        roadGuardTableInvalid = true;
+                        break;
+                    }
+                    double const lon = table[i].GetDouble(), lat = table[i + 1].GetDouble();
+                    if (!std::isfinite(lon) || !std::isfinite(lat) || std::abs(lat) > 85.0 || std::abs(lon) > 180.0) {
+                        roadGuardTableInvalid = true;
+                        break;
+                    }
+                    points.push_back(project(lon, lat));
+                }
+                if (!roadGuardTableInvalid) {
+                    std::array<float, 4> rect = {static_cast<float>(points[0].x), static_cast<float>(points[1].y),
+                        static_cast<float>(points[1].x - points[0].x),
+                        static_cast<float>(points[0].y - points[1].y)};
+                    if (rect[2] <= 0 || rect[3] <= 0 || rect[2] > 32768 || rect[3] > 32768
+                        || (roadGuardTableSeen && rect != roadGuardRect)) {
+                        roadGuardTableInvalid = true;
+                    } else if (!roadGuardTableSeen) {
+                        roadGuardRect = rect;
+                        roadGuardKey = *encoded;
+                        roadGuardTile = canonical;
+                        roadGuards.assign(points.begin() + 2, points.end());
+                        roadGuardTableSeen = true;
+                    }
+                }
+            } else {
+                roadGuardTableInvalid = true;
+            }
+        }
+    }
     for (auto& line : geometryCollection) {
         addGeometry(line, feature, canonical);
     }
@@ -53,6 +104,59 @@ void LineBucket::addFeature(const GeometryTileFeature& feature,
             pair.second.populateVertexVectors(feature, vertices.elements(), index, patternPositions, {}, canonical);
         }
     }
+}
+
+bool LineBucket::prepareRoadGuardImage(gfx::Context& context) {
+    using Key = std::tuple<gfx::Context*, CanonicalTileID, std::string>;
+    static std::mutex mutex;
+    static std::map<Key, std::weak_ptr<RoadGuardField>> fields;
+    std::lock_guard lock(mutex);
+    if (!roadGuardTableSeen || roadGuardTableInvalid) return false;
+    if (roadGuardField) return true;
+    for (auto it = fields.begin(); it != fields.end();) {
+        if (it->second.expired()) it = fields.erase(it);
+        else ++it;
+    }
+    Key const key{&context, roadGuardTile, roadGuardKey};
+    if (auto shared = fields[key].lock()) {
+        roadGuardField = std::move(shared);
+        return true;
+    }
+    roadGuardField = std::make_shared<RoadGuardField>();
+    fields[key] = roadGuardField;
+    constexpr int size = 256;
+    roadGuardField->image = std::make_shared<PremultipliedImage>(Size{size, size});
+    double const dx = roadGuardRect[2] / size;
+    double const dy = roadGuardRect[3] / size;
+    double const margin = std::hypot(dx, dy) * 0.5;
+    std::vector<double> distances(size * size, maxRoadGuardDistance);
+    for (auto const& point : roadGuards) {
+        int const minX = std::max(0, static_cast<int>(std::floor(
+            (point.x - maxRoadGuardDistance - margin - roadGuardRect[0]) / dx)));
+        int const maxX = std::min(size - 1, static_cast<int>(std::ceil(
+            (point.x + maxRoadGuardDistance + margin - roadGuardRect[0]) / dx)));
+        int const minY = std::max(0, static_cast<int>(std::floor(
+            (point.y - maxRoadGuardDistance - margin - roadGuardRect[1]) / dy)));
+        int const maxY = std::min(size - 1, static_cast<int>(std::ceil(
+            (point.y + maxRoadGuardDistance + margin - roadGuardRect[1]) / dy)));
+        for (int y = minY; y <= maxY; ++y) {
+            for (int x = minX; x <= maxX; ++x) {
+                double const distance = std::max(0.0, std::hypot(
+                    roadGuardRect[0] + (x + 0.5) * dx - point.x,
+                    roadGuardRect[1] + (y + 0.5) * dy - point.y) - margin);
+                auto& current = distances[y * size + x];
+                current = std::min(current, distance);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < distances.size(); ++i) {
+        auto const distance = static_cast<uint16_t>(std::floor(distances[i]));
+        roadGuardField->image->data[i * 4] = distance >> 8;
+        roadGuardField->image->data[i * 4 + 1] = distance & 255;
+        roadGuardField->image->data[i * 4 + 2] = 0;
+        roadGuardField->image->data[i * 4 + 3] = 255;
+    }
+    return true;
 }
 
 void LineBucket::addGeometry(const GeometryCoordinates& coordinates,

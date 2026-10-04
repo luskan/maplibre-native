@@ -43,6 +43,8 @@ struct data {
 // Paint attributes
 
 MBGL_DEFINE_ATTRIBUTE(float, 2, color);
+MBGL_DEFINE_ATTRIBUTE(float, 2, road_casing_color);
+MBGL_DEFINE_ATTRIBUTE(float, 1, road_fill_width);
 MBGL_DEFINE_ATTRIBUTE(float, 2, fill_color);
 MBGL_DEFINE_ATTRIBUTE(float, 2, halo_color);
 MBGL_DEFINE_ATTRIBUTE(float, 2, stroke_color);

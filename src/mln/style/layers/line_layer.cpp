@@ -109,6 +109,21 @@ void LineLayer::setLineMiterLimit(const PropertyValue<float>& value) {
     baseImpl = std::move(impl_);
     observer->onLayerChanged(*this);
 }
+PropertyValue<bool> LineLayer::getDefaultLineRoadComposite() {
+    return LineRoadComposite::defaultValue();
+}
+
+const PropertyValue<bool>& LineLayer::getLineRoadComposite() const {
+    return impl().layout.get<LineRoadComposite>();
+}
+
+void LineLayer::setLineRoadComposite(const PropertyValue<bool>& value) {
+    if (value == getLineRoadComposite()) return;
+    auto impl_ = mutableImpl();
+    impl_->layout.get<LineRoadComposite>() = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
 PropertyValue<float> LineLayer::getDefaultLineRoundLimit() {
     return LineRoundLimit::defaultValue();
 }
@@ -358,6 +373,87 @@ TransitionOptions LineLayer::getLinePatternTransition() const {
     return impl().paint.template get<LinePattern>().options;
 }
 
+PropertyValue<Color> LineLayer::getDefaultLineRoadCasingColor() {
+    return {{}};
+}
+
+const PropertyValue<Color>& LineLayer::getLineRoadCasingColor() const {
+    return impl().paint.template get<LineRoadCasingColor>().value;
+}
+
+void LineLayer::setLineRoadCasingColor(const PropertyValue<Color>& value) {
+    if (value == getLineRoadCasingColor())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadCasingColor>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineRoadCasingColorTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadCasingColor>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineRoadCasingColorTransition() const {
+    return impl().paint.template get<LineRoadCasingColor>().options;
+}
+
+PropertyValue<float> LineLayer::getDefaultLineRoadFillWidth() {
+    return {0.f};
+}
+
+const PropertyValue<float>& LineLayer::getLineRoadFillWidth() const {
+    return impl().paint.template get<LineRoadFillWidth>().value;
+}
+
+void LineLayer::setLineRoadFillWidth(const PropertyValue<float>& value) {
+    if (value == getLineRoadFillWidth())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadFillWidth>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineRoadFillWidthTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadFillWidth>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineRoadFillWidthTransition() const {
+    return impl().paint.template get<LineRoadFillWidth>().options;
+}
+
+PropertyValue<float> LineLayer::getDefaultLineRoadGuardWidth() {
+    return {0.f};
+}
+
+const PropertyValue<float>& LineLayer::getLineRoadGuardWidth() const {
+    return impl().paint.template get<LineRoadGuardWidth>().value;
+}
+
+void LineLayer::setLineRoadGuardWidth(const PropertyValue<float>& value) {
+    if (value == getLineRoadGuardWidth())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadGuardWidth>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineRoadGuardWidthTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadGuardWidth>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineRoadGuardWidthTransition() const {
+    return impl().paint.template get<LineRoadGuardWidth>().options;
+}
+
 PropertyValue<std::array<float, 2>> LineLayer::getDefaultLineTranslate() {
     return {{{0.f, 0.f}}};
 }
@@ -444,7 +540,7 @@ using namespace conversion;
 
 namespace {
 
-constexpr uint8_t kPaintPropertyCount = 22u;
+constexpr uint8_t kPaintPropertyCount = 28u;
 
 enum class Property : uint8_t {
     LineBlur,
@@ -455,6 +551,9 @@ enum class Property : uint8_t {
     LineOffset,
     LineOpacity,
     LinePattern,
+    LineRoadCasingColor,
+    LineRoadFillWidth,
+    LineRoadGuardWidth,
     LineTranslate,
     LineTranslateAnchor,
     LineWidth,
@@ -466,12 +565,16 @@ enum class Property : uint8_t {
     LineOffsetTransition,
     LineOpacityTransition,
     LinePatternTransition,
+    LineRoadCasingColorTransition,
+    LineRoadFillWidthTransition,
+    LineRoadGuardWidthTransition,
     LineTranslateTransition,
     LineTranslateAnchorTransition,
     LineWidthTransition,
     LineCap = kPaintPropertyCount,
     LineJoin,
     LineMiterLimit,
+    LineRoadComposite,
     LineRoundLimit,
     LineSortKey,
 };
@@ -490,6 +593,9 @@ constexpr const auto layerProperties = mapbox::eternal::hash_map<mapbox::eternal
      {"line-offset", toUint8(Property::LineOffset)},
      {"line-opacity", toUint8(Property::LineOpacity)},
      {"line-pattern", toUint8(Property::LinePattern)},
+     {"line-road-casing-color", toUint8(Property::LineRoadCasingColor)},
+     {"line-road-fill-width", toUint8(Property::LineRoadFillWidth)},
+     {"line-road-guard-width", toUint8(Property::LineRoadGuardWidth)},
      {"line-translate", toUint8(Property::LineTranslate)},
      {"line-translate-anchor", toUint8(Property::LineTranslateAnchor)},
      {"line-width", toUint8(Property::LineWidth)},
@@ -501,12 +607,16 @@ constexpr const auto layerProperties = mapbox::eternal::hash_map<mapbox::eternal
      {"line-offset-transition", toUint8(Property::LineOffsetTransition)},
      {"line-opacity-transition", toUint8(Property::LineOpacityTransition)},
      {"line-pattern-transition", toUint8(Property::LinePatternTransition)},
+     {"line-road-casing-color-transition", toUint8(Property::LineRoadCasingColorTransition)},
+     {"line-road-fill-width-transition", toUint8(Property::LineRoadFillWidthTransition)},
+     {"line-road-guard-width-transition", toUint8(Property::LineRoadGuardWidthTransition)},
      {"line-translate-transition", toUint8(Property::LineTranslateTransition)},
      {"line-translate-anchor-transition", toUint8(Property::LineTranslateAnchorTransition)},
      {"line-width-transition", toUint8(Property::LineWidthTransition)},
      {"line-cap", toUint8(Property::LineCap)},
      {"line-join", toUint8(Property::LineJoin)},
      {"line-miter-limit", toUint8(Property::LineMiterLimit)},
+     {"line-road-composite", toUint8(Property::LineRoadComposite)},
      {"line-round-limit", toUint8(Property::LineRoundLimit)},
      {"line-sort-key", toUint8(Property::LineSortKey)}});
 
@@ -528,6 +638,12 @@ StyleProperty getLayerProperty(const LineLayer& layer, Property property) {
             return makeStyleProperty(layer.getLineOpacity());
         case Property::LinePattern:
             return makeStyleProperty(layer.getLinePattern());
+        case Property::LineRoadCasingColor:
+            return makeStyleProperty(layer.getLineRoadCasingColor());
+        case Property::LineRoadFillWidth:
+            return makeStyleProperty(layer.getLineRoadFillWidth());
+        case Property::LineRoadGuardWidth:
+            return makeStyleProperty(layer.getLineRoadGuardWidth());
         case Property::LineTranslate:
             return makeStyleProperty(layer.getLineTranslate());
         case Property::LineTranslateAnchor:
@@ -550,6 +666,12 @@ StyleProperty getLayerProperty(const LineLayer& layer, Property property) {
             return makeStyleProperty(layer.getLineOpacityTransition());
         case Property::LinePatternTransition:
             return makeStyleProperty(layer.getLinePatternTransition());
+        case Property::LineRoadCasingColorTransition:
+            return makeStyleProperty(layer.getLineRoadCasingColorTransition());
+        case Property::LineRoadFillWidthTransition:
+            return makeStyleProperty(layer.getLineRoadFillWidthTransition());
+        case Property::LineRoadGuardWidthTransition:
+            return makeStyleProperty(layer.getLineRoadGuardWidthTransition());
         case Property::LineTranslateTransition:
             return makeStyleProperty(layer.getLineTranslateTransition());
         case Property::LineTranslateAnchorTransition:
@@ -562,6 +684,8 @@ StyleProperty getLayerProperty(const LineLayer& layer, Property property) {
             return makeStyleProperty(layer.getLineJoin());
         case Property::LineMiterLimit:
             return makeStyleProperty(layer.getLineMiterLimit());
+        case Property::LineRoadComposite:
+            return makeStyleProperty(layer.getLineRoadComposite());
         case Property::LineRoundLimit:
             return makeStyleProperty(layer.getLineRoundLimit());
         case Property::LineSortKey:
@@ -598,7 +722,8 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
     auto property = static_cast<Property>(it->second);
 
     if (property == Property::LineBlur || property == Property::LineGapWidth || property == Property::LineOffset ||
-        property == Property::LineOpacity || property == Property::LineWidth || property == Property::LineSortKey) {
+        property == Property::LineOpacity || property == Property::LineRoadFillWidth ||
+        property == Property::LineWidth || property == Property::LineSortKey) {
         Error error;
         const auto& typedValue = convert<PropertyValue<float>>(value, error, true, false);
         if (!typedValue) {
@@ -625,6 +750,11 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
             return std::nullopt;
         }
 
+        if (property == Property::LineRoadFillWidth) {
+            setLineRoadFillWidth(*typedValue);
+            return std::nullopt;
+        }
+
         if (property == Property::LineWidth) {
             setLineWidth(*typedValue);
             return std::nullopt;
@@ -635,15 +765,22 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
             return std::nullopt;
         }
     }
-    if (property == Property::LineColor) {
+    if (property == Property::LineColor || property == Property::LineRoadCasingColor) {
         Error error;
         const auto& typedValue = convert<PropertyValue<Color>>(value, error, true, false);
         if (!typedValue) {
             return error;
         }
 
-        setLineColor(*typedValue);
-        return std::nullopt;
+        if (property == Property::LineColor) {
+            setLineColor(*typedValue);
+            return std::nullopt;
+        }
+
+        if (property == Property::LineRoadCasingColor) {
+            setLineRoadCasingColor(*typedValue);
+            return std::nullopt;
+        }
     }
     if (property == Property::LineDasharray) {
         Error error;
@@ -674,6 +811,29 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
         setLinePattern(*typedValue);
         return std::nullopt;
+    }
+    if (property == Property::LineRoadGuardWidth || property == Property::LineMiterLimit ||
+        property == Property::LineRoundLimit) {
+        Error error;
+        const auto& typedValue = convert<PropertyValue<float>>(value, error, false, false);
+        if (!typedValue) {
+            return error;
+        }
+
+        if (property == Property::LineRoadGuardWidth) {
+            setLineRoadGuardWidth(*typedValue);
+            return std::nullopt;
+        }
+
+        if (property == Property::LineMiterLimit) {
+            setLineMiterLimit(*typedValue);
+            return std::nullopt;
+        }
+
+        if (property == Property::LineRoundLimit) {
+            setLineRoundLimit(*typedValue);
+            return std::nullopt;
+        }
     }
     if (property == Property::LineTranslate) {
         Error error;
@@ -715,22 +875,15 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
         setLineJoin(*typedValue);
         return std::nullopt;
     }
-    if (property == Property::LineMiterLimit || property == Property::LineRoundLimit) {
+    if (property == Property::LineRoadComposite) {
         Error error;
-        const auto& typedValue = convert<PropertyValue<float>>(value, error, false, false);
+        const auto& typedValue = convert<PropertyValue<bool>>(value, error, false, false);
         if (!typedValue) {
             return error;
         }
 
-        if (property == Property::LineMiterLimit) {
-            setLineMiterLimit(*typedValue);
-            return std::nullopt;
-        }
-
-        if (property == Property::LineRoundLimit) {
-            setLineRoundLimit(*typedValue);
-            return std::nullopt;
-        }
+        setLineRoadComposite(*typedValue);
+        return std::nullopt;
     }
 
     Error error;
@@ -776,6 +929,21 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
     if (property == Property::LinePatternTransition) {
         setLinePatternTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineRoadCasingColorTransition) {
+        setLineRoadCasingColorTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineRoadFillWidthTransition) {
+        setLineRoadFillWidthTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineRoadGuardWidthTransition) {
+        setLineRoadGuardWidthTransition(*transition);
         return std::nullopt;
     }
 

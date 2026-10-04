@@ -3,6 +3,24 @@ import referenceSpec from './style-spec-reference/v8.json' with { type: "json" }
 /** @type {any} */
 let modifiedReferenceSpec = referenceSpec;
 
+modifiedReferenceSpec.layout_line['line-road-composite'] = {
+  type: 'boolean', default: false, 'property-type': 'data-constant',
+  doc: 'Render an opaque road profile with a tile protection field on OpenGL.'
+};
+modifiedReferenceSpec.paint_line['line-road-fill-width'] = {
+  ...referenceSpec.paint_line['line-width'], default: 0,
+  doc: 'Inner width of the composite road profile in logical pixels.'
+};
+modifiedReferenceSpec.paint_line['line-road-casing-color'] = {
+  ...referenceSpec.paint_line['line-color'], default: 'rgba(0,0,0,0)',
+  doc: 'Outer color of the composite road profile.'
+};
+modifiedReferenceSpec.paint_line['line-road-guard-width'] = {
+  ...referenceSpec.paint_line['line-width'], default: 0, 'property-type': 'data-constant',
+  expression: { interpolated: true, parameters: ['zoom'] },
+  doc: 'Conservative widest road width used to protect openings.'
+};
+
 // https://github.com/maplibre/maplibre-native/issues/250
 delete modifiedReferenceSpec['layout_symbol']['text-rotation-alignment']["values"]['viewport-glyph']
 

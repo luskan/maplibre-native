@@ -61,6 +61,7 @@ private:
     gfx::Texture2DPtr colorRampTexture2D;
 
     gfx::ShaderGroupPtr lineShaderGroup;
+    gfx::ShaderGroupPtr lineRoadShaderGroup;
     gfx::ShaderGroupPtr lineGradientShaderGroup;
     gfx::ShaderGroupPtr lineSDFShaderGroup;
     gfx::ShaderGroupPtr linePatternShaderGroup;

@@ -9,6 +9,7 @@
 #include <mln/renderer/paint_parameters.hpp>
 #include <mln/renderer/render_tile.hpp>
 #include <mln/shaders/line_layer_ubo.hpp>
+#include <mln/shaders/line_road_ubo.hpp>
 #include <mln/shaders/shader_program_base.hpp>
 #include <mln/style/layers/line_layer_properties.hpp>
 #include <mln/util/logging.hpp>
@@ -232,6 +233,7 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
         auto& drawableUniforms = drawable.mutableUniformBuffers();
 #endif
         switch (static_cast<LineType>(drawable.getType())) {
+            case LineType::Road:
             case LineType::Simple: {
 #if MLN_UBO_CONSOLIDATION
                 drawableUBOVector[i].lineDrawableUBO = {
@@ -252,6 +254,22 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
 
 #if !MLN_UBO_CONSOLIDATION
                 drawableUniforms.createOrUpdate(idLineDrawableUBO, &drawableUBO, context);
+#endif
+
+#if MLN_RENDER_BACKEND_OPENGL
+                if (static_cast<LineType>(drawable.getType()) == LineType::Road) {
+                    auto const& data = static_cast<LineRoadDrawableData const&>(*drawable.getData());
+                    LineRoadPropsUBO const roadUBO{
+                        .casingColor = evaluate<LineRoadCasingColor>(parameters),
+                        .guardRect = data.guardRect,
+                        .fillWidth = evaluate<LineRoadFillWidth>(parameters),
+                        .guardWidth = evaluated.get<LineRoadGuardWidth>(),
+                        .fillWidthT = std::get<0>(binders->get<LineRoadFillWidth>()->interpolationFactor(zEval)),
+                        .casingColorT = std::get<0>(binders->get<LineRoadCasingColor>()->interpolationFactor(zEval)),
+                        .maxGuardDistance = LineBucket::maxRoadGuardDistance,
+                    };
+                    drawable.mutableUniformBuffers().createOrUpdate(idLineExpressionUBO, &roadUBO, context);
+                }
 #endif
 
             } break;

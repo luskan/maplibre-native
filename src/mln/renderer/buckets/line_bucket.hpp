@@ -7,6 +7,7 @@
 #include <mln/shaders/segment.hpp>
 #include <mln/style/layers/line_layer_properties.hpp>
 #include <mln/style/image_impl.hpp>
+#include <mln/gfx/texture2d.hpp>
 
 namespace mln {
 
@@ -97,11 +98,25 @@ public:
 
     std::map<std::string, LineBinders> paintPropertyBinders;
 
+    struct RoadGuardField {
+        std::shared_ptr<PremultipliedImage> image;
+        gfx::Texture2DPtr texture;
+    };
+    bool prepareRoadGuardImage(gfx::Context&);
+    std::shared_ptr<RoadGuardField> roadGuardField;
+    std::array<float, 4> roadGuardRect{};
+    static constexpr float maxRoadGuardDistance = 2048.0f;
+
 private:
     void addGeometry(const GeometryCoordinates&, const GeometryTileFeature&, const CanonicalTileID&);
 
     const float zoom;
     const uint32_t overscaling;
+    std::vector<Point<double>> roadGuards;
+    std::string roadGuardKey;
+    CanonicalTileID roadGuardTile{0, 0, 0};
+    bool roadGuardTableSeen = false;
+    bool roadGuardTableInvalid = false;
 };
 
 } // namespace mln

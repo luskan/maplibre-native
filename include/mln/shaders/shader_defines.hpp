@@ -516,6 +516,9 @@ enum {
     idLinePatternFromVertexAttribute,
     idLinePatternToVertexAttribute,
 
+    idLineRoadCasingColorVertexAttribute,
+    idLineRoadFillWidthVertexAttribute,
+
     lineVertexAttributeCount
 };
 

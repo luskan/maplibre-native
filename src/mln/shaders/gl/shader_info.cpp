@@ -356,6 +356,29 @@ const std::vector<AttributeInfo> LineShaderInfo::attributes = {
 };
 const std::vector<TextureInfo> LineShaderInfo::textures = {};
 
+using LineRoadShaderInfo = ShaderInfo<BuiltIn::LineRoadShader, gfx::Backend::Type::OpenGL>;
+const std::vector<UniformBlockInfo> LineRoadShaderInfo::uniformBlocks = {
+    UniformBlockInfo{"GlobalPaintParamsUBO", idGlobalPaintParamsUBO},
+    UniformBlockInfo{"LineDrawableUBO", idLineDrawableUBO},
+    UniformBlockInfo{"LineEvaluatedPropsUBO", idLineEvaluatedPropsUBO},
+    UniformBlockInfo{"LineRoadPropsUBO", idLineExpressionUBO},
+};
+const std::vector<AttributeInfo> LineRoadShaderInfo::attributes = {
+    AttributeInfo{"a_pos_normal", idLinePosNormalVertexAttribute},
+    AttributeInfo{"a_data", idLineDataVertexAttribute},
+    AttributeInfo{"a_color", idLineColorVertexAttribute},
+    AttributeInfo{"a_blur", idLineBlurVertexAttribute},
+    AttributeInfo{"a_opacity", idLineOpacityVertexAttribute},
+    AttributeInfo{"a_gapwidth", idLineGapWidthVertexAttribute},
+    AttributeInfo{"a_offset", idLineOffsetVertexAttribute},
+    AttributeInfo{"a_width", idLineWidthVertexAttribute},
+    AttributeInfo{"a_road_casing_color", idLineRoadCasingColorVertexAttribute},
+    AttributeInfo{"a_road_fill_width", idLineRoadFillWidthVertexAttribute},
+};
+const std::vector<TextureInfo> LineRoadShaderInfo::textures = {
+    TextureInfo{"u_road_guard", idLineImageTexture},
+};
+
 // Location Indicator
 using LocationIndicatorInfo = ShaderInfo<BuiltIn::LocationIndicatorShader, gfx::Backend::Type::OpenGL>;
 

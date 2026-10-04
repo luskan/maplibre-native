@@ -5,6 +5,7 @@
 #include <mln/shaders/shader_source.hpp>
 #include <mln/shaders/program_parameters.hpp>
 #include <mln/util/containers.hpp>
+#include <mln/util/logging.hpp>
 
 namespace mln {
 namespace gl {
@@ -63,6 +64,9 @@ public:
                                          additionalDefines);
         if (!shader || !registerShader(shader, shaderName)) {
             throw std::runtime_error("Failed to register " + shaderName + " with shader group!");
+        }
+        if constexpr (ShaderID == shaders::BuiltIn::LineRoadShader) {
+            Log::Info(Event::Shader, "Compiled LineRoadShader");
         }
         return shader;
     }

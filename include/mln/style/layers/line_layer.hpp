@@ -36,6 +36,10 @@ public:
     const PropertyValue<float>& getLineMiterLimit() const;
     void setLineMiterLimit(const PropertyValue<float>&);
 
+    static PropertyValue<bool> getDefaultLineRoadComposite();
+    const PropertyValue<bool>& getLineRoadComposite() const;
+    void setLineRoadComposite(const PropertyValue<bool>&);
+
     static PropertyValue<float> getDefaultLineRoundLimit();
     const PropertyValue<float>& getLineRoundLimit() const;
     void setLineRoundLimit(const PropertyValue<float>&);
@@ -93,6 +97,24 @@ public:
     void setLinePattern(const PropertyValue<expression::Image>&);
     void setLinePatternTransition(const TransitionOptions&);
     TransitionOptions getLinePatternTransition() const;
+
+    static PropertyValue<Color> getDefaultLineRoadCasingColor();
+    const PropertyValue<Color>& getLineRoadCasingColor() const;
+    void setLineRoadCasingColor(const PropertyValue<Color>&);
+    void setLineRoadCasingColorTransition(const TransitionOptions&);
+    TransitionOptions getLineRoadCasingColorTransition() const;
+
+    static PropertyValue<float> getDefaultLineRoadFillWidth();
+    const PropertyValue<float>& getLineRoadFillWidth() const;
+    void setLineRoadFillWidth(const PropertyValue<float>&);
+    void setLineRoadFillWidthTransition(const TransitionOptions&);
+    TransitionOptions getLineRoadFillWidthTransition() const;
+
+    static PropertyValue<float> getDefaultLineRoadGuardWidth();
+    const PropertyValue<float>& getLineRoadGuardWidth() const;
+    void setLineRoadGuardWidth(const PropertyValue<float>&);
+    void setLineRoadGuardWidthTransition(const TransitionOptions&);
+    TransitionOptions getLineRoadGuardWidthTransition() const;
 
     static PropertyValue<std::array<float, 2>> getDefaultLineTranslate();
     const PropertyValue<std::array<float, 2>>& getLineTranslate() const;

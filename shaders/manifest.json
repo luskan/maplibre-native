@@ -173,6 +173,13 @@
         "uses_ubos": true
     },
     {
+        "name": "LineRoadShader",
+        "header": "line_road",
+        "glsl_vert": "line_road.vertex.glsl",
+        "glsl_frag": "line_road.fragment.glsl",
+        "uses_ubos": true
+    },
+    {
         "name": "LineGradientShader",
         "header": "line_gradient",
         "glsl_vert": "line_gradient.vertex.glsl",

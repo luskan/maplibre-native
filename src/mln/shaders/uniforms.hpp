@@ -14,6 +14,8 @@ MBGL_DEFINE_UNIFORM_MATRIX(double, 4, matrix);
 // Shaders are using UBOs in drawable architecture.
 MBGL_DEFINE_UNIFORM_SCALAR(float, opacity);
 MBGL_DEFINE_UNIFORM_SCALAR(Color, color);
+MBGL_DEFINE_UNIFORM_SCALAR(Color, road_casing_color);
+MBGL_DEFINE_UNIFORM_SCALAR(float, road_fill_width);
 MBGL_DEFINE_UNIFORM_SCALAR(float, blur);
 MBGL_DEFINE_UNIFORM_SCALAR(float, radius);
 MBGL_DEFINE_UNIFORM_SCALAR(float, stroke_width);

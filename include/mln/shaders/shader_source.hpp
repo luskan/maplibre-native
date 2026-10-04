@@ -34,6 +34,7 @@ enum class BuiltIn {
     ColorReliefShader,
     HillshadeShader,
     LineShader,
+    LineRoadShader,
     LineGradientShader,
     LinePatternShader,
     LocationIndicatorShader,

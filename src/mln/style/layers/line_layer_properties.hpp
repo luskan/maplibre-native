@@ -31,6 +31,11 @@ struct LineMiterLimit : LayoutProperty<float> {
     static float defaultValue() { return 2.f; }
 };
 
+struct LineRoadComposite : LayoutProperty<bool> {
+    static constexpr const char *name() { return "line-road-composite"; }
+    static bool defaultValue() { return false; }
+};
+
 struct LineRoundLimit : LayoutProperty<float> {
     static constexpr const char *name() { return "line-round-limit"; }
     static float defaultValue() { return 1; }
@@ -77,6 +82,18 @@ struct LinePattern : CrossFadedDataDrivenPaintProperty<expression::Image, attrib
     static expression::Image defaultValue() { return {}; }
 };
 
+struct LineRoadCasingColor : DataDrivenPaintProperty<Color, attributes::road_casing_color, uniforms::road_casing_color> {
+    static Color defaultValue() { return {}; }
+};
+
+struct LineRoadFillWidth : DataDrivenPaintProperty<float, attributes::road_fill_width, uniforms::road_fill_width> {
+    static float defaultValue() { return 0.f; }
+};
+
+struct LineRoadGuardWidth : PaintProperty<float> {
+    static float defaultValue() { return 0.f; }
+};
+
 struct LineTranslate : PaintProperty<std::array<float, 2>> {
     static std::array<float, 2> defaultValue() { return {{0.f, 0.f}}; }
 };
@@ -93,6 +110,7 @@ class LineLayoutProperties : public Properties<
     LineCap,
     LineJoin,
     LineMiterLimit,
+    LineRoadComposite,
     LineRoundLimit,
     LineSortKey
 > {};
@@ -107,6 +125,9 @@ class LinePaintProperties : public Properties<
     LineOffset,
     LineOpacity,
     LinePattern,
+    LineRoadCasingColor,
+    LineRoadFillWidth,
+    LineRoadGuardWidth,
     LineTranslate,
     LineTranslateAnchor,
     LineWidth

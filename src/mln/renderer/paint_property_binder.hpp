@@ -24,6 +24,7 @@ namespace mln {
 
 namespace style {
 struct LineWidth;
+struct LineRoadFillWidth;
 struct LineFloorWidth;
 struct LineColor;
 } // namespace style
@@ -731,7 +732,8 @@ class PaintPropertyBindersBase {};
 
 namespace detail {
 template <class P>
-inline constexpr bool isLineWidthPaintProperty = std::is_same_v<P, style::LineWidth>;
+inline constexpr bool isLineWidthPaintProperty = std::is_same_v<P, style::LineWidth>
+    || std::is_same_v<P, style::LineRoadFillWidth>;
 } // namespace detail
 
 template <class Ps>
