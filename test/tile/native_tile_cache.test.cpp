@@ -876,3 +876,109 @@ TEST_F(NativeCacheTest, SchedulerFailureReleasesQueuedWriterPinWithoutClosingSto
   EXPECT_TRUE(cache->enabled());
   scheduler->rejectSchedule = false;
 }
+
+class NativeTrimRecoveryTest : public NativeCacheTest
+{
+protected:
+  void verifyPair(bool resetBeforeResume)
+  {
+    start();
+    populate();
+    auto optional = payload();
+    ASSERT_TRUE(cache->remember("optional", optional, policy));
+    std::weak_ptr<const NativeTilePayload> released = optional;
+    optional.reset();
+    auto active = payload();
+    ASSERT_TRUE(cache->remember("active", active, policy));
+    ASSERT_GT(number("retainedBytes"), 0u);
+
+    unsigned readReplies = 0, hookReplies = 0, hookRuns = 0;
+    cache->read("tile", metadata(), policy, {},
+                [&](NativeTilePayloadPtr value)
+                {
+                  ++readReplies;
+                  EXPECT_FALSE(value);
+                });
+    auto queued = payload();
+    cache->persist("queued-write", queued, policy);
+    cache->postBackground(
+        policy,
+        [&](NativeTileStore *)
+        {
+          ++hookRuns;
+          return true;
+        },
+        [&](bool success)
+        {
+          ++hookReplies;
+          EXPECT_FALSE(success);
+        });
+
+    cache->trim();
+    if (resetBeforeResume)
+      scheduler->drain();
+    cache->resume();
+    const auto current = cache->policy();
+    EXPECT_GT(current.generation, policy.generation);
+    scheduler->drain();
+
+    rapidjson::Document state;
+    state.Parse(cache->snapshotJSON().c_str());
+    EXPECT_FALSE(state["suspended"].GetBool());
+    EXPECT_EQ(number("pendingControls"), 0u);
+    EXPECT_EQ(number("retainedBytes"), 0u);
+    EXPECT_TRUE(released.expired());
+    EXPECT_TRUE(active);
+    EXPECT_EQ(readReplies, 1u);
+    EXPECT_EQ(hookReplies, 1u);
+    EXPECT_EQ(hookRuns, 0u);
+    EXPECT_EQ(data->records.size(), 1u);
+    EXPECT_EQ(data->writes, 1u);
+    EXPECT_FALSE(cache->remember("stale", payload(), policy));
+
+    auto fresh = payload();
+    ASSERT_TRUE(cache->remember("fresh", fresh, current));
+    ASSERT_EQ(cache->get("fresh", metadata(), current), fresh);
+    cache->persist("fresh", fresh, current);
+    scheduler->drain();
+    EXPECT_EQ(data->records.size(), 2u);
+    EXPECT_EQ(data->writes, 2u);
+    EXPECT_GT(number("retainedBytes"), 0u);
+
+    ASSERT_TRUE(cache->clear(false));
+    scheduler->drain();
+    fresh.reset();
+    unsigned freshReplies = 0;
+    cache->read("fresh", metadata(), cache->policy(), {},
+                [&](NativeTilePayloadPtr value)
+                {
+                  ++freshReplies;
+                  EXPECT_TRUE(value);
+                });
+    scheduler->drain();
+    EXPECT_EQ(freshReplies, 1u);
+    EXPECT_EQ(data->reads, 1u);
+  }
+};
+
+TEST_F(NativeTrimRecoveryTest, CoalescedTrimAndResumeEvictOldWorkAndAdmitNewWork) { verifyPair(false); }
+
+TEST_F(NativeTrimRecoveryTest, CompletedResetBeforeResumeStillAdmitsNewWork) { verifyPair(true); }
+
+TEST_F(NativeTrimRecoveryTest, HiddenTrimKeepsSuspensionUntilExplicitResume)
+{
+  start(false);
+  auto optional = payload();
+  ASSERT_TRUE(cache->remember("optional", optional, policy));
+  optional.reset();
+  cache->trim();
+  scheduler->drain();
+  rapidjson::Document state;
+  state.Parse(cache->snapshotJSON().c_str());
+  EXPECT_TRUE(state["suspended"].GetBool());
+  EXPECT_EQ(number("retainedBytes"), 0u);
+  EXPECT_FALSE(cache->reservePrepared(4096));
+  cache->resume();
+  scheduler->drain();
+  EXPECT_TRUE(cache->reservePrepared(4096));
+}

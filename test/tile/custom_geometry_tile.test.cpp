@@ -2338,3 +2338,201 @@ TEST(CustomGeometryTile, OptimizationPolicyRequiresNativeSourceOptInAndEnabledMo
   NativeTileTest::Receiver legacy(test, id);
   EXPECT_TRUE(legacy.tile->optimizationPolicy() == RenderOptimizationPolicy{});
 }
+
+
+namespace
+{
+std::shared_ptr<NativeTileCache> memoryOnlyNativeCache(bool enabled = true)
+{
+  auto cache = std::make_shared<NativeTileCache>(
+      NativeTileCache::Config{},
+      [](const std::string &, NativeTileStoreLimits) -> std::unique_ptr<NativeTileStore> { return {}; });
+  cache->configure("native-memory-test", "native-test", enabled, false);
+  return cache;
+}
+} // namespace
+
+TEST(CustomGeometryTile, NativeReplacementCancellationWithCacheOnAndOff)
+{
+  for (bool enabled : {false, true})
+    for (bool remove : {false, true})
+    {
+      SCOPED_TRACE(testing::Message() << "enabled=" << enabled << " remove=" << remove);
+      auto cache = memoryOnlyNativeCache(enabled);
+      NativeTileTest test(cache);
+      ASSERT_TRUE(settleNativeCache(test, cache));
+      const OverscaledTileID id(0, 0, 0);
+      NativeTileTest::Receiver receiver(test, id);
+      test.fetch(receiver);
+      ASSERT_EQ(1u, test.requests.size());
+      const auto old = test.requests.back();
+      const auto issued = getCustomTileLoaderRegistrationStats().fetchesIssued;
+      test.cancellationAction = [&](const auto &, const auto &ticket)
+      {
+        if (ticket != old)
+          return;
+        if (remove)
+          test.loader.removeTile(id, receiver.token);
+        else
+          test.loader.cancelTile(id, receiver.token);
+      };
+      test.key = "replacement";
+      test.fetch(receiver);
+      EXPECT_EQ(1u, test.requests.size());
+      EXPECT_EQ(issued, getCustomTileLoaderRegistrationStats().fetchesIssued);
+      test.cancellationAction = {};
+      test.fetch(receiver);
+      EXPECT_EQ(2u, test.requests.size());
+    }
+}
+
+TEST(CustomGeometryTile, NativeDescriptorCancellationStopsPendingWork)
+{
+  for (bool remove : {false, true})
+    for (bool throws : {false, true})
+    {
+      SCOPED_TRACE(testing::Message() << "remove=" << remove << " throws=" << throws);
+      auto cache = memoryOnlyNativeCache();
+      NativeTileTest test(cache);
+      ASSERT_TRUE(settleNativeCache(test, cache));
+      const OverscaledTileID id(0, 0, 0);
+      NativeTileTest::Receiver receiver(test, id);
+      test.descriptorResolver = [&](const auto &) -> std::string
+      {
+        if (remove)
+          test.loader.removeTile(id, receiver.token);
+        else
+          test.loader.cancelTile(id, receiver.token);
+        if (throws)
+          throw std::runtime_error("descriptor failure after cancellation");
+        return "durable";
+      };
+      test.fetch(receiver);
+      EXPECT_TRUE(test.requests.empty());
+      test.descriptorResolver = {};
+      test.fetch(receiver);
+      EXPECT_EQ(1u, test.requests.size());
+    }
+}
+
+TEST(CustomGeometryTile, NativeDescriptorRetirementDoesNotFetch)
+{
+  for (int action : {0, 1, 2})
+  {
+    SCOPED_TRACE(action);
+    auto cache = memoryOnlyNativeCache();
+    NativeTileTest test(cache);
+    ASSERT_TRUE(settleNativeCache(test, cache));
+    const OverscaledTileID id(0, 0, 0);
+    NativeTileTest::Receiver receiver(test, id);
+    test.descriptorResolver = [&](const auto &) -> std::string
+    {
+      if (action == 0)
+        test.loader.invalidateTile(id.canonical);
+      if (action == 1)
+      {
+        test.key = "new-key";
+        test.state->resolve(id.canonical, [&](const auto &) { return NativeRequestBinding{test.key, test.inputs}; });
+      }
+      if (action == 2)
+        test.state->retire();
+      return "durable";
+    };
+    test.fetch(receiver);
+    EXPECT_TRUE(test.requests.empty());
+  }
+}
+
+TEST(CustomGeometryTile, NativeDescriptorExceptionCoalescesLiveDemand)
+{
+  auto cache = memoryOnlyNativeCache();
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver first(test, id), second(test, id);
+  test.descriptorResolver = [](const auto &) -> std::string { throw std::runtime_error("descriptor failed"); };
+  test.fetch(first);
+  test.fetch(second);
+  ASSERT_EQ(1u, test.requests.size());
+  test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return first.tile->isComplete() && second.tile->isComplete(); }));
+}
+
+TEST(CustomGeometryTile, NativePendingSecondReceiverSurvivesReentrantCancellation)
+{
+  for (bool remove : {false, true})
+  {
+    SCOPED_TRACE(remove);
+    auto cache = memoryOnlyNativeCache();
+    NativeTileTest test(cache);
+    ASSERT_TRUE(settleNativeCache(test, cache));
+    const OverscaledTileID id(0, 0, 0);
+    NativeTileTest::Receiver first(test, id), second(test, id);
+    bool entered = false;
+    test.descriptorResolver = [&](const auto &) -> std::string
+    {
+      if (!entered)
+      {
+        entered = true;
+        test.fetch(second);
+        if (remove)
+          test.loader.removeTile(id, first.token);
+        else
+          test.loader.cancelTile(id, first.token);
+      }
+      return {};
+    };
+    test.fetch(first);
+    ASSERT_EQ(1u, test.requests.size());
+    test.descriptorResolver = {};
+    test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+    ASSERT_TRUE(test.waitUntil([&] { return second.tile->isComplete(); }));
+    EXPECT_FALSE(first.tile->isComplete());
+  }
+}
+
+TEST(CustomGeometryTile, NativeThrowingCancellationPreservesReplacement)
+{
+  auto cache = memoryOnlyNativeCache();
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver receiver(test, id);
+  test.fetch(receiver);
+  const auto old = test.requests.front();
+  test.cancellationAction = [&](const auto &, const auto &ticket)
+  {
+    if (ticket == old)
+      throw std::runtime_error("cancel failed");
+  };
+  test.key = "new-key";
+  EXPECT_NO_THROW(test.fetch(receiver));
+  EXPECT_EQ(2u, test.requests.size());
+}
+
+TEST(CustomGeometryTile, NativeServedReceiverDoesNotCauseRedundantFetch)
+{
+  auto cache = memoryOnlyNativeCache();
+  NativeTileTest test(cache);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  const OverscaledTileID id(0, 0, 0);
+  NativeTileTest::Receiver served(test, id), waiting(test, id);
+  test.fetch(served);
+  ASSERT_EQ(1u, test.requests.size());
+  test.publish(id.canonical, test.requests.front(), test.payload(id.canonical));
+  ASSERT_TRUE(test.waitUntil([&] { return served.tile->isComplete(); }));
+  cache->clear(false);
+  ASSERT_TRUE(settleNativeCache(test, cache));
+  test.descriptorResolver = [&](const auto &) -> std::string
+  {
+    test.loader.cancelTile(id, waiting.token);
+    return {};
+  };
+  test.fetch(waiting);
+  EXPECT_EQ(1u, test.requests.size());
+  EXPECT_TRUE(served.tile->isComplete());
+  EXPECT_FALSE(waiting.tile->isComplete());
+  test.descriptorResolver = {};
+  test.fetch(waiting);
+  EXPECT_EQ(2u, test.requests.size());
+}
