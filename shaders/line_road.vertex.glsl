@@ -54,8 +54,8 @@ layout (std140) uniform LineRoadPropsUBO {
     highp float u_road_fill_width_t;
     highp float u_road_casing_color_t;
     highp float u_road_max_guard_distance;
-    highp float road_pad1;
-    highp float road_pad2;
+    highp float u_road_length;
+    highp float u_road_length_t;
     highp float road_pad3;
 };
 out highp vec2 v_road_tile_pos;
@@ -73,10 +73,12 @@ out highp float v_linesofar;
 #pragma mapbox: define mediump float width
 #pragma mapbox: define highp vec4 road_casing_color
 #pragma mapbox: define highp float road_fill_width
+#pragma mapbox: define highp float road_length
 
 void main() {
     #pragma mapbox: initialize highp vec4 road_casing_color
     #pragma mapbox: initialize highp float road_fill_width
+    #pragma mapbox: initialize highp float road_length
     #pragma mapbox: initialize highp vec4 color
     #pragma mapbox: initialize lowp float blur
     #pragma mapbox: initialize lowp float opacity

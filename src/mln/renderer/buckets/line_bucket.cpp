@@ -1,4 +1,5 @@
 #include <mln/renderer/buckets/line_bucket.hpp>
+#include <mln/renderer/buckets/line_road_length.hpp>
 #include <mln/renderer/bucket_parameters.hpp>
 #include <mln/style/layers/line_layer_impl.hpp>
 #include <mln/util/math.hpp>
@@ -91,17 +92,20 @@ void LineBucket::addFeature(const GeometryTileFeature& feature,
             }
         }
     }
+    auto const vertexStart = vertices.elements();
     for (auto& line : geometryCollection) {
         addGeometry(line, feature, canonical);
     }
+    LineRoadLengthFeature profile(feature, geometryCollection, vertices, vertexStart, vertices.elements());
+    auto const& paintFeature = layout.get<LineRoadComposite>() ? static_cast<GeometryTileFeature const&>(profile) : feature;
 
     for (auto& pair : paintPropertyBinders) {
         const auto it = patternDependencies.find(pair.first);
         if (it != patternDependencies.end()) {
             pair.second.populateVertexVectors(
-                feature, vertices.elements(), index, patternPositions, it->second, canonical);
+                paintFeature, vertices.elements(), index, patternPositions, it->second, canonical);
         } else {
-            pair.second.populateVertexVectors(feature, vertices.elements(), index, patternPositions, {}, canonical);
+            pair.second.populateVertexVectors(paintFeature, vertices.elements(), index, patternPositions, {}, canonical);
         }
     }
 }

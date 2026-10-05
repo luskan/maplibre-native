@@ -374,6 +374,7 @@ const std::vector<AttributeInfo> LineRoadShaderInfo::attributes = {
     AttributeInfo{"a_width", idLineWidthVertexAttribute},
     AttributeInfo{"a_road_casing_color", idLineRoadCasingColorVertexAttribute},
     AttributeInfo{"a_road_fill_width", idLineRoadFillWidthVertexAttribute},
+    AttributeInfo{"a_road_length", idLineRoadLengthVertexAttribute},
 };
 const std::vector<TextureInfo> LineRoadShaderInfo::textures = {
     TextureInfo{"u_road_guard", idLineImageTexture},

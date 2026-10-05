@@ -267,6 +267,8 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
                         .fillWidthT = std::get<0>(binders->get<LineRoadFillWidth>()->interpolationFactor(zEval)),
                         .casingColorT = std::get<0>(binders->get<LineRoadCasingColor>()->interpolationFactor(zEval)),
                         .maxGuardDistance = LineBucket::maxRoadGuardDistance,
+                        .length = evaluate<LineRoadLength>(parameters),
+                        .lengthT = std::get<0>(binders->get<LineRoadLength>()->interpolationFactor(zEval)),
                     };
                     drawable.mutableUniformBuffers().createOrUpdate(idLineExpressionUBO, &roadUBO, context);
                 }

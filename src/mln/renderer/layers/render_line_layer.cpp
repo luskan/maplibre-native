@@ -339,6 +339,10 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 // This drawable was produced on a previous style/bucket, and should not be updated.
                 return false;
             }
+            if (drawable.getType() == mln::underlying_type(LineLayerTweaker::LineType::Road)) {
+                auto const& data = static_cast<LineRoadDrawableData const&>(*drawable.getData());
+                if (data.unguarded != (evaluated.get<LineRoadGuardWidth>() == 0.0f)) return false;
+            }
             return true;
         };
         if (updateTile(renderPass, tileID, std::move(updateExisting))) {
@@ -358,6 +362,7 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
             if (type == LineLayerTweaker::LineType::Road) {
                 auto data = std::make_unique<LineRoadDrawableData>();
                 data->guardRect = bucket.roadGuardRect;
+                data->unguarded = evaluated.get<LineRoadGuardWidth>() == 0.0f;
                 drawable->setData(std::move(data));
             }
 
@@ -487,21 +492,32 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
             // simple line
             if (bucket.layout.get<LineRoadComposite>()) {
 #if MLN_RENDER_BACKEND_OPENGL
-                if (!bucket.prepareRoadGuardImage(context)) continue;
+                bool const unguarded = evaluated.get<LineRoadGuardWidth>() == 0.0f;
+                if (!unguarded && !bucket.prepareRoadGuardImage(context)) continue;
                 if (!lineRoadShaderGroup) lineRoadShaderGroup = shaders.getShaderGroup("LineRoadShader");
                 if (!lineRoadShaderGroup) continue;
-                vertexAttrs->readDataDrivenPaintProperties<LineRoadCasingColor, LineRoadFillWidth>(
+                vertexAttrs->readDataDrivenPaintProperties<LineRoadCasingColor, LineRoadFillWidth, LineRoadLength>(
                     paintPropertyBinders, evaluated, propertiesAsUniforms, idLineRoadCasingColorVertexAttribute);
                 auto shader = lineRoadShaderGroup->getOrCreateShader(context, propertiesAsUniforms, posNormalAttribName);
                 if (!shader) continue;
-                if (!bucket.roadGuardField->texture) {
+                gfx::Texture2DPtr texture;
+                if (unguarded) {
+                    if (!roadEmptyTexture) {
+                        roadEmptyTexture = context.createTexture2D();
+                        roadEmptyTexture->setImage(std::make_shared<PremultipliedImage>(Size{1, 1}));
+                        roadEmptyTexture->setSamplerConfiguration({.filter = gfx::TextureFilterType::Nearest,
+                            .wrapU = gfx::TextureWrapType::Clamp, .wrapV = gfx::TextureWrapType::Clamp});
+                    }
+                    texture = roadEmptyTexture;
+                } else if (!bucket.roadGuardField->texture) {
                     bucket.roadGuardField->texture = context.createTexture2D();
                     bucket.roadGuardField->texture->setImage(bucket.roadGuardField->image);
                     bucket.roadGuardField->texture->setSamplerConfiguration({.filter = gfx::TextureFilterType::Nearest,
                         .wrapU = gfx::TextureWrapType::Clamp, .wrapV = gfx::TextureWrapType::Clamp});
                 }
+                if (!unguarded) texture = bucket.roadGuardField->texture;
                 auto builder = createLineBuilder("lineRoad", std::move(shader));
-                builder->setTexture(bucket.roadGuardField->texture, idLineImageTexture);
+                builder->setTexture(texture, idLineImageTexture);
                 addAttributes(*builder, bucket, std::move(vertexAttrs));
                 setSegments(builder, bucket);
                 builder->flush(context);

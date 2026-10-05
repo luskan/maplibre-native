@@ -454,6 +454,33 @@ TransitionOptions LineLayer::getLineRoadGuardWidthTransition() const {
     return impl().paint.template get<LineRoadGuardWidth>().options;
 }
 
+PropertyValue<float> LineLayer::getDefaultLineRoadLength() {
+    return {0.f};
+}
+
+const PropertyValue<float>& LineLayer::getLineRoadLength() const {
+    return impl().paint.template get<LineRoadLength>().value;
+}
+
+void LineLayer::setLineRoadLength(const PropertyValue<float>& value) {
+    if (value == getLineRoadLength())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadLength>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineRoadLengthTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadLength>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineRoadLengthTransition() const {
+    return impl().paint.template get<LineRoadLength>().options;
+}
+
 PropertyValue<std::array<float, 2>> LineLayer::getDefaultLineTranslate() {
     return {{{0.f, 0.f}}};
 }
@@ -540,7 +567,7 @@ using namespace conversion;
 
 namespace {
 
-constexpr uint8_t kPaintPropertyCount = 28u;
+constexpr uint8_t kPaintPropertyCount = 30u;
 
 enum class Property : uint8_t {
     LineBlur,
@@ -554,6 +581,7 @@ enum class Property : uint8_t {
     LineRoadCasingColor,
     LineRoadFillWidth,
     LineRoadGuardWidth,
+    LineRoadLength,
     LineTranslate,
     LineTranslateAnchor,
     LineWidth,
@@ -568,6 +596,7 @@ enum class Property : uint8_t {
     LineRoadCasingColorTransition,
     LineRoadFillWidthTransition,
     LineRoadGuardWidthTransition,
+    LineRoadLengthTransition,
     LineTranslateTransition,
     LineTranslateAnchorTransition,
     LineWidthTransition,
@@ -596,6 +625,7 @@ constexpr const auto layerProperties = mapbox::eternal::hash_map<mapbox::eternal
      {"line-road-casing-color", toUint8(Property::LineRoadCasingColor)},
      {"line-road-fill-width", toUint8(Property::LineRoadFillWidth)},
      {"line-road-guard-width", toUint8(Property::LineRoadGuardWidth)},
+     {"line-road-length", toUint8(Property::LineRoadLength)},
      {"line-translate", toUint8(Property::LineTranslate)},
      {"line-translate-anchor", toUint8(Property::LineTranslateAnchor)},
      {"line-width", toUint8(Property::LineWidth)},
@@ -610,6 +640,7 @@ constexpr const auto layerProperties = mapbox::eternal::hash_map<mapbox::eternal
      {"line-road-casing-color-transition", toUint8(Property::LineRoadCasingColorTransition)},
      {"line-road-fill-width-transition", toUint8(Property::LineRoadFillWidthTransition)},
      {"line-road-guard-width-transition", toUint8(Property::LineRoadGuardWidthTransition)},
+     {"line-road-length-transition", toUint8(Property::LineRoadLengthTransition)},
      {"line-translate-transition", toUint8(Property::LineTranslateTransition)},
      {"line-translate-anchor-transition", toUint8(Property::LineTranslateAnchorTransition)},
      {"line-width-transition", toUint8(Property::LineWidthTransition)},
@@ -644,6 +675,8 @@ StyleProperty getLayerProperty(const LineLayer& layer, Property property) {
             return makeStyleProperty(layer.getLineRoadFillWidth());
         case Property::LineRoadGuardWidth:
             return makeStyleProperty(layer.getLineRoadGuardWidth());
+        case Property::LineRoadLength:
+            return makeStyleProperty(layer.getLineRoadLength());
         case Property::LineTranslate:
             return makeStyleProperty(layer.getLineTranslate());
         case Property::LineTranslateAnchor:
@@ -672,6 +705,8 @@ StyleProperty getLayerProperty(const LineLayer& layer, Property property) {
             return makeStyleProperty(layer.getLineRoadFillWidthTransition());
         case Property::LineRoadGuardWidthTransition:
             return makeStyleProperty(layer.getLineRoadGuardWidthTransition());
+        case Property::LineRoadLengthTransition:
+            return makeStyleProperty(layer.getLineRoadLengthTransition());
         case Property::LineTranslateTransition:
             return makeStyleProperty(layer.getLineTranslateTransition());
         case Property::LineTranslateAnchorTransition:
@@ -723,7 +758,7 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
     if (property == Property::LineBlur || property == Property::LineGapWidth || property == Property::LineOffset ||
         property == Property::LineOpacity || property == Property::LineRoadFillWidth ||
-        property == Property::LineWidth || property == Property::LineSortKey) {
+        property == Property::LineRoadLength || property == Property::LineWidth || property == Property::LineSortKey) {
         Error error;
         const auto& typedValue = convert<PropertyValue<float>>(value, error, true, false);
         if (!typedValue) {
@@ -752,6 +787,11 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
         if (property == Property::LineRoadFillWidth) {
             setLineRoadFillWidth(*typedValue);
+            return std::nullopt;
+        }
+
+        if (property == Property::LineRoadLength) {
+            setLineRoadLength(*typedValue);
             return std::nullopt;
         }
 
@@ -944,6 +984,11 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
     if (property == Property::LineRoadGuardWidthTransition) {
         setLineRoadGuardWidthTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineRoadLengthTransition) {
+        setLineRoadLengthTransition(*transition);
         return std::nullopt;
     }
 

@@ -94,6 +94,10 @@ struct LineRoadGuardWidth : PaintProperty<float> {
     static float defaultValue() { return 0.f; }
 };
 
+struct LineRoadLength : DataDrivenPaintProperty<float, attributes::road_length, uniforms::road_length> {
+    static float defaultValue() { return 0.f; }
+};
+
 struct LineTranslate : PaintProperty<std::array<float, 2>> {
     static std::array<float, 2> defaultValue() { return {{0.f, 0.f}}; }
 };
@@ -128,6 +132,7 @@ class LinePaintProperties : public Properties<
     LineRoadCasingColor,
     LineRoadFillWidth,
     LineRoadGuardWidth,
+    LineRoadLength,
     LineTranslate,
     LineTranslateAnchor,
     LineWidth

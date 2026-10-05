@@ -59,6 +59,7 @@ private:
 
     std::shared_ptr<PremultipliedImage> colorRamp;
     gfx::Texture2DPtr colorRampTexture2D;
+    gfx::Texture2DPtr roadEmptyTexture;
 
     gfx::ShaderGroupPtr lineShaderGroup;
     gfx::ShaderGroupPtr lineRoadShaderGroup;

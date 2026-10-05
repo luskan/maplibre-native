@@ -116,6 +116,12 @@ public:
     void setLineRoadGuardWidthTransition(const TransitionOptions&);
     TransitionOptions getLineRoadGuardWidthTransition() const;
 
+    static PropertyValue<float> getDefaultLineRoadLength();
+    const PropertyValue<float>& getLineRoadLength() const;
+    void setLineRoadLength(const PropertyValue<float>&);
+    void setLineRoadLengthTransition(const TransitionOptions&);
+    TransitionOptions getLineRoadLengthTransition() const;
+
     static PropertyValue<std::array<float, 2>> getDefaultLineTranslate();
     const PropertyValue<std::array<float, 2>>& getLineTranslate() const;
     void setLineTranslate(const PropertyValue<std::array<float, 2>>&);

@@ -518,6 +518,7 @@ enum {
 
     idLineRoadCasingColorVertexAttribute,
     idLineRoadFillWidthVertexAttribute,
+    idLineRoadLengthVertexAttribute,
 
     lineVertexAttributeCount
 };

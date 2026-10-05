@@ -15,8 +15,8 @@ struct alignas(16) LineRoadPropsUBO
   float fillWidthT;
   float casingColorT;
   float maxGuardDistance;
-  float pad1 = 0;
-  float pad2 = 0;
+  float length = 0;
+  float lengthT = 0;
   float pad3 = 0;
 };
 static_assert(sizeof(LineRoadPropsUBO) == 64);
@@ -24,5 +24,6 @@ static_assert(sizeof(LineRoadPropsUBO) == 64);
 struct LineRoadDrawableData : gfx::DrawableData
 {
   std::array<float, 4> guardRect;
+  bool unguarded = false;
 };
 }

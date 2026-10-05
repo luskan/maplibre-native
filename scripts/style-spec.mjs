@@ -18,7 +18,11 @@ modifiedReferenceSpec.paint_line['line-road-casing-color'] = {
 modifiedReferenceSpec.paint_line['line-road-guard-width'] = {
   ...referenceSpec.paint_line['line-width'], default: 0, 'property-type': 'data-constant',
   expression: { interpolated: true, parameters: ['zoom'] },
-  doc: 'Conservative widest road width used to protect openings.'
+  doc: 'Conservative widest road width used to protect openings, or zero for a local faded profile.'
+};
+modifiedReferenceSpec.paint_line['line-road-length'] = {
+  ...referenceSpec.paint_line['line-width'], default: 0,
+  doc: 'Packed tile-unit length of a local faded road profile.'
 };
 
 // https://github.com/maplibre/maplibre-native/issues/250
