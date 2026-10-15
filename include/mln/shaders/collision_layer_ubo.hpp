@@ -14,7 +14,7 @@ static_assert(sizeof(CollisionDrawableUBO) == 4 * 16);
 struct alignas(16) CollisionTilePropsUBO {
     /*  0 */ std::array<float, 2> extrude_scale;
     /*  8 */ float overscale_factor;
-    /* 12 */ float pad1;
+    /* 12 */ float ignore_perspective;
     /* 16 */
 };
 static_assert(sizeof(CollisionTilePropsUBO) == 16);

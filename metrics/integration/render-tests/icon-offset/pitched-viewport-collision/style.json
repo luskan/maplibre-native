@@ -1,0 +1,66 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 512,
+      "height": 512,
+      "collisionDebug": true,
+      "description": "Icons with icon-offset keep a constant size in a pitched view, so their collision boxes must not scale with the perspective ratio. The far label touches the far icon and must be hidden, the near label is clear of the near icon and must be shown."
+    }
+  },
+  "center": [0, 0],
+  "zoom": 14,
+  "pitch": 60,
+  "sources": {
+    "points": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {"off": [3.23, 0]},
+            "geometry": {"type": "Point", "coordinates": [0.0000215, 0.0313]}
+          },
+          {
+            "type": "Feature",
+            "properties": {"off": [2.6, 0]},
+            "geometry": {"type": "Point", "coordinates": [0.0000215, -0.011]}
+          }
+        ]
+      }
+    }
+  },
+  "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
+  "sprite": "local://sprites/sprite",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {"background-color": "#cccccc"}
+    },
+    {
+      "id": "labels",
+      "type": "symbol",
+      "source": "points",
+      "layout": {
+        "text-field": "Label",
+        "text-font": ["Open Sans Semibold", "Arial Unicode MS Bold"],
+        "text-size": 16,
+        "text-anchor": "left",
+        "text-offset": ["get", "off"]
+      }
+    },
+    {
+      "id": "offset-icons",
+      "type": "symbol",
+      "source": "points",
+      "layout": {
+        "icon-image": "fav-bank-18",
+        "icon-size": 3,
+        "icon-offset": [0, 0],
+        "icon-allow-overlap": true
+      }
+    }
+  ]
+}

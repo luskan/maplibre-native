@@ -9,13 +9,17 @@ namespace mln {
 namespace gfx {
 
 struct CollisionDrawableData : public DrawableData {
-    CollisionDrawableData(const std::array<float, 2> translate_, const style::TranslateAnchorType translateAnchor_)
+    CollisionDrawableData(const std::array<float, 2> translate_,
+                          const style::TranslateAnchorType translateAnchor_,
+                          const bool ignorePerspective_ = false)
         : translate(translate_),
-          translateAnchor(translateAnchor_) {}
+          translateAnchor(translateAnchor_),
+          ignorePerspective(ignorePerspective_) {}
     ~CollisionDrawableData() override = default;
 
     std::array<float, 2> translate;
     style::TranslateAnchorType translateAnchor;
+    bool ignorePerspective;
 };
 
 using UniqueCollisionDrawableData = std::unique_ptr<CollisionDrawableData>;

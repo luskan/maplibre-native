@@ -200,6 +200,7 @@ void RenderSymbolLayer::prepare(const LayerPrepareParameters& params) {
     addRenderPassesFromTiles();
 
     placementData.clear();
+    const bool isOffset = !impl_cast(baseImpl).layout.get<IconOffset>().isUndefined();
 
     for (const RenderTile& renderTile : *renderTiles) {
         auto* bucket = static_cast<SymbolBucket*>(renderTile.getBucket(*baseImpl));
@@ -212,14 +213,20 @@ void RenderSymbolLayer::prepare(const LayerPrepareParameters& params) {
             auto featureIndex = static_cast<const GeometryTile*>(tile)->getFeatureIndex();
 
             if (bucket->sortKeyRanges.empty()) {
-                placementData.push_back({*bucket, renderTile, featureIndex, baseImpl->source, std::nullopt});
+                placementData.push_back({.bucket = *bucket,
+                                         .tile = renderTile,
+                                         .featureIndex = featureIndex,
+                                         .sourceId = baseImpl->source,
+                                         .sortKeyRange = std::nullopt,
+                                         .isOffset = isOffset});
             } else {
                 for (const auto& sortKeyRange : bucket->sortKeyRanges) {
                     BucketPlacementData layerData{.bucket = *bucket,
                                                   .tile = renderTile,
                                                   .featureIndex = featureIndex,
                                                   .sourceId = baseImpl->source,
-                                                  .sortKeyRange = sortKeyRange};
+                                                  .sortKeyRange = sortKeyRange,
+                                                  .isOffset = isOffset};
                     auto sortPosition = std::upper_bound( // NOLINT(modernize-use-ranges)
                         placementData.cbegin(),
                         placementData.cend(),
@@ -654,7 +661,8 @@ void RenderSymbolLayer::update(gfx::ShaderRegistry& shaders,
                 drawable->setTileID(tileID);
                 drawable->setLayerTweaker(collisionLayerTweaker);
 
-                auto drawData = std::make_unique<gfx::CollisionDrawableData>(values.translate, values.translateAnchor);
+                auto drawData = std::make_unique<gfx::CollisionDrawableData>(
+                    values.translate, values.translateAnchor, isOffset && values.pitchAlignment != AlignmentType::Map);
                 drawable->setData(std::move(drawData));
                 collisionGroup->addDrawable(passes, tileID, std::move(drawable));
                 ++stats.drawablesAdded;

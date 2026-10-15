@@ -113,7 +113,7 @@ IntersectStatus CollisionIndex::intersectsTileEdges(const CollisionBox& box,
                                                     const mat4& posMatrix,
                                                     const float textPixelRatio,
                                                     const CollisionBoundaries& tileEdges) const {
-    auto boundaries = getProjectedCollisionBoundaries(posMatrix, shift, textPixelRatio, box);
+    auto boundaries = getProjectedCollisionBoundaries(posMatrix, shift, textPixelRatio, box, /*ignorePerspective*/ false);
     IntersectStatus result;
     const float x1 = boundaries[0];
     const float y1 = boundaries[1];
@@ -157,6 +157,7 @@ std::pair<bool, bool> CollisionIndex::placeFeature(
     const float fontSize,
     const bool allowOverlap,
     const bool pitchWithMap,
+    const bool ignorePerspective,
     const bool collisionDebug,
     const std::optional<CollisionBoundaries>& avoidEdges,
     const std::optional<std::function<bool(const RefIndexedSubfeature&)>>& collisionGroupPredicate,
@@ -164,7 +165,8 @@ std::pair<bool, bool> CollisionIndex::placeFeature(
     assert(projectedBoxes.empty());
     if (!feature.alongLine) {
         const CollisionBox& box = feature.boxes.front();
-        auto collisionBoundaries = getProjectedCollisionBoundaries(posMatrix, shift, textPixelRatio, box);
+        auto collisionBoundaries = getProjectedCollisionBoundaries(
+            posMatrix, shift, textPixelRatio, box, ignorePerspective);
         projectedBoxes.emplace_back(
             collisionBoundaries[0], collisionBoundaries[1], collisionBoundaries[2], collisionBoundaries[3]);
         if ((avoidEdges && !isInsideTile(collisionBoundaries, *avoidEdges)) || !isInsideGrid(collisionBoundaries) ||
@@ -453,14 +455,24 @@ Point<float> CollisionIndex::projectPoint(const mat4& posMatrix, const Point<flo
 CollisionBoundaries CollisionIndex::getProjectedCollisionBoundaries(const mat4& posMatrix,
                                                                     Point<float> shift,
                                                                     float textPixelRatio,
-                                                                    const CollisionBox& box) const {
+                                                                    const CollisionBox& box,
+                                                                    bool ignorePerspective) const {
     const auto projectedPoint = projectAndGetPerspectiveRatio(posMatrix, box.anchor);
     const float tileToViewport = textPixelRatio * projectedPoint.second;
+    if (!ignorePerspective) {
+        return CollisionBoundaries{{
+            (box.x1 + shift.x) * tileToViewport + projectedPoint.first.x,
+            (box.y1 + shift.y) * tileToViewport + projectedPoint.first.y,
+            (box.x2 + shift.x) * tileToViewport + projectedPoint.first.x,
+            (box.y2 + shift.y) * tileToViewport + projectedPoint.first.y,
+        }};
+    }
+    // The variable anchor shift is drawn with the ratio also when the symbol itself is not
     return CollisionBoundaries{{
-        (box.x1 + shift.x) * tileToViewport + projectedPoint.first.x,
-        (box.y1 + shift.y) * tileToViewport + projectedPoint.first.y,
-        (box.x2 + shift.x) * tileToViewport + projectedPoint.first.x,
-        (box.y2 + shift.y) * tileToViewport + projectedPoint.first.y,
+        box.x1 * textPixelRatio + shift.x * tileToViewport + projectedPoint.first.x,
+        box.y1 * textPixelRatio + shift.y * tileToViewport + projectedPoint.first.y,
+        box.x2 * textPixelRatio + shift.x * tileToViewport + projectedPoint.first.x,
+        box.y2 * textPixelRatio + shift.y * tileToViewport + projectedPoint.first.y,
     }};
 }
 

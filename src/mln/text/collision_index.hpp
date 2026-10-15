@@ -46,6 +46,7 @@ public:
         float fontSize,
         bool allowOverlap,
         bool pitchWithMap,
+        bool ignorePerspective,
         bool collisionDebug,
         const std::optional<CollisionBoundaries>& avoidEdges,
         const std::optional<std::function<bool(const RefIndexedSubfeature&)>>& collisionGroupPredicate,
@@ -101,7 +102,8 @@ private:
     CollisionBoundaries getProjectedCollisionBoundaries(const mat4& posMatrix,
                                                         Point<float> shift,
                                                         float textPixelRatio,
-                                                        const CollisionBox& box) const;
+                                                        const CollisionBox& box,
+                                                        bool ignorePerspective) const;
 
     const TransformState transformState;
 

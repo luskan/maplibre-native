@@ -70,6 +70,8 @@ public:
     std::shared_ptr<FeatureIndex> featureIndex;
     std::string sourceId;
     std::optional<SortKeyRange> sortKeyRange;
+    // Set when the layer has icon-offset, the shaders then draw it without the perspective ratio.
+    bool isOffset = false;
 };
 
 using LayerPlacementData = std::list<BucketPlacementData>;

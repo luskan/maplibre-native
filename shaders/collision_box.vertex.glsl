@@ -23,7 +23,7 @@ layout (std140) uniform CollisionDrawableUBO {
 layout (std140) uniform CollisionTilePropsUBO {
     highp vec2 u_extrude_scale;
     highp float u_overscale_factor;
-    lowp float drawable_pad1;
+    lowp float u_ignore_perspective;
 };
 
 out float v_placed;
@@ -38,7 +38,9 @@ void main() {
         4.0);
 
     gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
-    gl_Position.xy += (a_extrude + a_shift) * u_extrude_scale * gl_Position.w * collision_perspective_ratio;
+    // Viewport pitched symbols of icon-offset layers draw the box without the ratio, the shift keeps it
+    highp float box_ratio = u_ignore_perspective > 0.5 ? 1.0 : collision_perspective_ratio;
+    gl_Position.xy += (a_extrude * box_ratio + a_shift * collision_perspective_ratio) * u_extrude_scale * gl_Position.w;
 
     v_placed = a_placed.x;
     v_notUsed = a_placed.y;

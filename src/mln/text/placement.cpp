@@ -78,6 +78,7 @@ public:
                      float placementZoom,
                      float sizeEvaluationZoom,
                      CollisionGroups::CollisionGroup collisionGroup_,
+                     bool isOffset_,
                      std::optional<CollisionBoundaries> avoidEdges_ = std::nullopt)
         : bucket(bucket_),
           renderTile(renderTile_),
@@ -88,6 +89,8 @@ public:
           collisionGroup(std::move(collisionGroup_)),
           partiallyEvaluatedTextSize(bucket_.textSizeBinder->evaluateForZoom(sizeEvaluationZoom)),
           partiallyEvaluatedIconSize(bucket_.iconSizeBinder->evaluateForZoom(sizeEvaluationZoom)),
+          textIgnorePerspective(isOffset_ && !pitchTextWithMap),
+          iconIgnorePerspective(isOffset_ && !pitchIconWithMap),
           avoidEdges(std::move(avoidEdges_)) {}
 
     const SymbolBucket& getBucket() const { return bucket.get(); }
@@ -144,6 +147,11 @@ public:
                           (textAllowOverlap || !getBucket().hasTextData() || getLayout().get<style::TextOptional>());
 
     bool hasIconTextFit = getLayout().get<IconTextFit>() != IconTextFitType::None;
+
+    // Viewport pitched symbols of an icon-offset layer keep a constant size on screen, so their
+    // boxes skip the perspective ratio too. Map pitched ones keep the old approximation.
+    bool textIgnorePerspective;
+    bool iconIgnorePerspective;
 
     std::optional<CollisionBoundaries> avoidEdges;
 };
@@ -245,6 +253,7 @@ void Placement::placeSymbolBucket(const BucketPlacementData& params, std::set<ui
                          placementZoom,
                          placementZoom + evaluationZoomBias,
                          collisionGroups.get(params.sourceId),
+                         params.isOffset,
                          getAvoidEdges(symbolBucket, renderTile.matrix)};
     for (const SymbolInstance& symbol : getSortedSymbols(params, ctx.pixelRatio)) {
         if (!symbol.check(SYM_GUARD_LOC)) continue;
@@ -341,6 +350,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
                                                                  fontSize,
                                                                  ctx.textAllowOverlap,
                                                                  ctx.pitchTextWithMap,
+                                                                 ctx.textIgnorePerspective,
                                                                  showCollisionBoxes,
                                                                  ctx.avoidEdges,
                                                                  collisionGroup.second,
@@ -435,6 +445,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
                                                                 fontSize,
                                                                 allowOverlap,
                                                                 ctx.pitchTextWithMap,
+                                                                ctx.textIgnorePerspective,
                                                                 showCollisionBoxes,
                                                                 ctx.avoidEdges,
                                                                 collisionGroup.second,
@@ -452,6 +463,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
                             fontSize,
                             ctx.iconAllowOverlap,
                             ctx.pitchTextWithMap, // TODO: shall it be pitchIconWithMap?
+                            ctx.iconIgnorePerspective,
                             showCollisionBoxes,
                             ctx.avoidEdges,
                             collisionGroup.second,
@@ -550,6 +562,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
                                                fontSize,
                                                ctx.iconAllowOverlap,
                                                ctx.pitchTextWithMap,
+                                               ctx.iconIgnorePerspective,
                                                showCollisionBoxes,
                                                ctx.avoidEdges,
                                                collisionGroup.second,
@@ -1499,6 +1512,7 @@ void TilePlacement::placeSymbolBucket(const BucketPlacementData& params, std::se
                          placementZoom,
                          placementZoom + evaluationZoomBias,
                          collisionGroups.get(params.sourceId),
+                         params.isOffset,
                          getAvoidEdges(bucket, renderTile.matrix)};
 
     // In this case we first try to place symbols, which intersects the tile

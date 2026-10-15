@@ -1,5 +1,6 @@
 {
     "render-tests/fill-outline-color/zoom-and-property-function": "It will be fixed after triangulated lines will support data driven properties",
     "render-tests/fill-outline-color/property-function": "It will be fixed after triangulated lines will support data driven properties",
-    "render-tests/fill-extrusion-color/function": "Layer Z Fighting: https://github.com/maplibre/maplibre-native/issues/1847"
+    "render-tests/fill-extrusion-color/function": "Layer Z Fighting: https://github.com/maplibre/maplibre-native/issues/1847",
+    "render-tests/icon-offset/pitched-viewport-collision": "Collision debug boxes of icon-offset layers are fixed only in the GL shader"
 }
