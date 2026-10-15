@@ -442,7 +442,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float angle_cos = cos(segment_angle + symbol_rotation);
     const auto rotation_matrix = float2x2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
     const float4 projected_pos = drawable.label_plane_matrix * float4(dynamic.projected_pos[0], dynamic.projected_pos[1], 0.0, 1.0);
-    const float2 pos_rot = a_offset / 32.0 * fontScale + a_pxoffset;
+    const float2 pos_rot = a_offset / 32.0 * fontScale + a_pxoffset / 16.0;
     const float2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
     const float4 position = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
 

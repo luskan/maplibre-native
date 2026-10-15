@@ -371,7 +371,7 @@ fn main(in: VertexInput) -> VertexOutput {
     let rotation_matrix = mat2x2<f32>(angle_cos, -angle_sin, angle_sin, angle_cos);
 
     let projected_pos = drawable.label_plane_matrix * vec4<f32>(in.projected_pos.xy, 0.0, 1.0);
-    let pos_rot = a_offset / 32.0 * fontScale + a_pxoffset;
+    let pos_rot = a_offset / 32.0 * fontScale + a_pxoffset / 16.0;
     let pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
     let position = drawable.coord_matrix * vec4<f32>(pos0, 0.0, 1.0);
 

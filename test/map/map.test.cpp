@@ -2039,3 +2039,46 @@ TEST(Map, SetFrustumOffset) {
 
     test::checkImage("test/fixtures/map/setFrustumOffset/after", test.frontend.render(test.map).image, 0.0006, 0.1);
 }
+
+// Stretch zones must not move an SDF icon drawn at its own size. The fixed parts are placed by
+// pixel offsets, which the SDF shader has to scale like the icon shader.
+TEST(Map, StretchedSDFIconMatchesPlainIcon) {
+    auto render = [](bool stretched) {
+        MapTest<> test;
+        test.map.getStyle().loadJSON(R"({"version": 8,
+            "sources": {"point": {"type": "geojson", "data": {"type": "Point", "coordinates": [0, 0]}}},
+            "layers": [
+                {"id": "background", "type": "background", "paint": {"background-color": "white"}},
+                {"id": "box", "type": "symbol", "source": "point", "layout": {"icon-image": "box"},
+                 "paint": {"icon-color": "#ffff00", "icon-halo-color": "#000000", "icon-halo-width": 2}}]})");
+        // A rectangle with the fill edge 8 px inside the image border.
+        PremultipliedImage image({32, 32});
+        for (uint32_t y = 0; y < 32; ++y) {
+            for (uint32_t x = 0; x < 32; ++x) {
+                const float dx = std::max(8.0f - (x + 0.5f), (x + 0.5f) - 24.0f);
+                const float dy = std::max(8.0f - (y + 0.5f), (y + 0.5f) - 24.0f);
+                const float value = std::clamp(192.0f - 32.0f * std::max(dx, dy), 0.0f, 255.0f);
+                std::fill_n(image.data.get() + (y * 32 + x) * 4, 4, static_cast<uint8_t>(value));
+            }
+        }
+        const ImageStretches stretch = stretched ? ImageStretches{{12.0f, 20.0f}} : ImageStretches{};
+        test.map.getStyle().addImage(std::make_unique<style::Image>("box", std::move(image), 1.0f, true, stretch, stretch));
+        return test.frontend.render(test.map).image;
+    };
+    const auto plain = render(false);
+    const auto stretched = render(true);
+    ASSERT_EQ(plain.size, stretched.size);
+    size_t drawn = 0;
+    size_t different = 0;
+    for (size_t i = 0; i < plain.bytes(); i += 4) {
+        drawn += plain.data[i + 2] < 128;
+        for (size_t c = 0; c < 4; ++c) {
+            if (std::abs(int(plain.data[i + c]) - int(stretched.data[i + c])) > 16) {
+                ++different;
+                break;
+            }
+        }
+    }
+    EXPECT_GT(drawn, 256u);
+    EXPECT_EQ(different, 0u);
+}
