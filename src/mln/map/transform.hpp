@@ -97,6 +97,7 @@ public:
     bool getHighPitchProjection() const;
     void setMaxGroundViewDistanceMeters(double);
     double getMaxGroundViewDistanceMeters() const;
+    double getMaxGroundViewDistanceScreenY() const;
 
     bool setFieldOfView(double);
 

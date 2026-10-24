@@ -167,6 +167,7 @@ public:
     bool getHighPitchProjection() const;
     void setMaxGroundViewDistanceMeters(double meters);
     double getMaxGroundViewDistanceMeters() const;
+    double getMaxGroundViewDistanceScreenY() const;
 
     /// Sets the vertical field of view in radians, clamped to 10-120 degrees.
     /// Invalid values restore the default, custom values need the high-pitch profile.

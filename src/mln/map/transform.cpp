@@ -545,6 +545,10 @@ double Transform::getMaxGroundViewDistanceMeters() const {
     return state.getMaxGroundViewDistanceMeters();
 }
 
+double Transform::getMaxGroundViewDistanceScreenY() const {
+    return state.getMaxGroundViewDistanceScreenY();
+}
+
 bool Transform::setFieldOfView(double radians) {
     return state.setFieldOfViewOverride(radians);
 }

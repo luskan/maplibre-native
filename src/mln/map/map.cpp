@@ -576,6 +576,10 @@ double Map::getMaxGroundViewDistanceMeters() const {
     return impl->transform.getMaxGroundViewDistanceMeters();
 }
 
+double Map::getMaxGroundViewDistanceScreenY() const {
+    return impl->transform.getMaxGroundViewDistanceScreenY();
+}
+
 void Map::setFieldOfView(double radians) {
     // Mark the camera changed only when the lens changes.
     // This keeps a no-op reset from blocking the style camera.
