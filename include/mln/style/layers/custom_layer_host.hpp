@@ -63,6 +63,13 @@ public:
      * been called.
      */
     virtual void deinitialize() = 0;
+
+    /**
+     * OpenGL only: return true to draw the layer at its place in the style instead of after all
+     * layers (other backends always do). The stencil buffer is cleared after the host, the depth
+     * buffer is not, so the host must not write depth.
+     */
+    virtual bool drawInLayerOrder() const { return false; }
 };
 
 } // namespace style

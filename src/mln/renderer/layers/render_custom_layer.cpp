@@ -111,27 +111,12 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
                                [[maybe_unused]] const PaintParameters& paintParameters,
                                [[maybe_unused]] const RenderTree& renderTree,
                                [[maybe_unused]] UniqueChangeRequestVec& changes) {
-#if MLN_RENDER_BACKEND_OPENGL
-    if (layerGroup) {
-        removeAllDrawables();
-        activateLayerGroup(layerGroup, false, changes);
-        layerGroup.reset();
-    }
-#else
-    // create layer group
-    if (!layerGroup) {
-        if (auto layerGroup_ = context.createLayerGroup(layerIndex, /*initialCapacity=*/1, getID())) {
-            setLayerGroup(std::move(layerGroup_), changes);
-        }
-    }
-
-    auto* localLayerGroup = static_cast<LayerGroup*>(layerGroup.get());
-
-#endif
-
     // check if host changed and update
     bool hostChanged = (host != impl(baseImpl).host);
     if (hostChanged) {
+        // The drawable keeps the old host, drop it before the new host is initialized, which may throw.
+        removeAllDrawables();
+
         // If the context changed, deinitialize the previous one before initializing the new one.
         if (host && !contextDestroyed) {
             MBGL_CHECK_ERROR(host->deinitialize());
@@ -139,6 +124,28 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
         host = impl(baseImpl).host;
         needsInitialize = true;
     }
+
+#if MLN_RENDER_BACKEND_OPENGL
+    // On OpenGL the host is drawn after all layers, unless it asks for the style order.
+    const bool inLayerOrder = host->drawInLayerOrder();
+#else
+    const bool inLayerOrder = true;
+#endif
+
+    if (!inLayerOrder && layerGroup) {
+        removeAllDrawables();
+        activateLayerGroup(layerGroup, false, changes);
+        layerGroup.reset();
+    }
+
+    // create layer group
+    if (inLayerOrder && !layerGroup) {
+        if (auto layerGroup_ = context.createLayerGroup(layerIndex, /*initialCapacity=*/1, getID())) {
+            setLayerGroup(std::move(layerGroup_), changes);
+        }
+    }
+
+    auto* localLayerGroup = static_cast<LayerGroup*>(layerGroup.get());
 
     if (needsInitialize) {
         MBGL_CHECK_ERROR(initializeHost(host, context));
@@ -148,11 +155,8 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
     // call the pre-render
     MBGL_CHECK_ERROR(callPreRender(host, context, paintParameters));
 
-#if !MLN_RENDER_BACKEND_OPENGL
     // create drawable
-    if (localLayerGroup->getDrawableCount() == 0 || hostChanged) {
-        localLayerGroup->clearDrawables();
-
+    if (localLayerGroup && localLayerGroup->getDrawableCount() == 0) {
         // create tweaker
         auto tweaker = std::make_shared<gfx::DrawableCustomLayerHostTweaker>(host);
 
@@ -169,12 +173,12 @@ void RenderCustomLayer::update([[maybe_unused]] gfx::ShaderRegistry& shaders,
         localLayerGroup->addDrawable(std::move(drawable));
         ++stats.drawablesAdded;
     }
-#endif
 }
 
 void RenderCustomLayer::render([[maybe_unused]] PaintParameters& paintParameters) {
 #if MLN_RENDER_BACKEND_OPENGL
-    if (needsInitialize) {
+    // A host with a layer group is drawn in style order by its tweaker.
+    if (needsInitialize || layerGroup) {
         return;
     }
 

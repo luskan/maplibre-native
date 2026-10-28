@@ -12,6 +12,8 @@
 #elif MLN_RENDER_BACKEND_VULKAN
 #include <mln/style/layers/vulkan/custom_layer_render_parameters.hpp>
 #include <mln/vulkan/render_pass.hpp>
+#elif MLN_RENDER_BACKEND_OPENGL
+#include <mln/gl/context.hpp>
 #endif
 
 #include <memory>
@@ -44,6 +46,21 @@ void DrawableCustomLayerHostTweaker::execute([[maybe_unused]] gfx::Drawable& dra
     paintParameters.backend.getDefaultRenderable().getResource<gfx::RenderableResource>().bind();
 
     context.setDirtyState();
+
+#if MLN_RENDER_BACKEND_OPENGL
+    // The host can write the stencil buffer, so the tile clip masks may be lost. Clear it with
+    // a full write mask and no scissor, the layers above draw their masks again.
+    auto& glContext = static_cast<gl::Context&>(context);
+    glContext.setStencilMode(gfx::StencilMode{.test = gfx::StencilMode::Always(),
+                                              .ref = 0,
+                                              .mask = 0b11111111,
+                                              .fail = gfx::StencilOpType::Keep,
+                                              .depthFail = gfx::StencilOpType::Keep,
+                                              .pass = gfx::StencilOpType::Keep});
+    glContext.setScissorTest({0, 0, 0, 0});
+    paintParameters.clearStencil();
+#endif
+
     context.bindGlobalUniformBuffers(*paintParameters.renderPass);
 }
 
