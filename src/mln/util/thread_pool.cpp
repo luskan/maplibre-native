@@ -22,10 +22,10 @@ void ThreadedSchedulerBase::terminate() {
 }
 
 std::thread ThreadedSchedulerBase::makeSchedulerThread(size_t index) {
-    return std::thread([this, index] {
-        auto& settings = platform::Settings::getInstance();
-        auto value = settings.get(platform::EXPERIMENTAL_THREAD_PRIORITY_WORKER);
-        if (auto* priority = value.getDouble()) {
+    // A worker can start after process-wide settings have been destroyed.
+    auto prioritySetting = platform::Settings::getInstance().get(platform::EXPERIMENTAL_THREAD_PRIORITY_WORKER);
+    return std::thread([this, index, prioritySetting = std::move(prioritySetting)] {
+        if (const auto* priority = prioritySetting.getDouble()) {
             platform::setCurrentThreadPriority(*priority);
         }
 
