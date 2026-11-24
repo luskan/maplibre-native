@@ -196,13 +196,9 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
     auto& layerUniforms = layerGroup.mutableUniformBuffers();
     layerUniforms.set(idLineEvaluatedPropsUBO, evaluatedPropsUniformBuffer);
 #if MLN_RENDER_BACKEND_OPENGL
-    if (evaluated.get<LineTrafficMarker>().constantOr(1.0f) != 0.0f) {
-        auto& data = parameters.staticData;
-        if (!data.trafficPaintBuffer) context.emplaceOrUpdateUniformBuffer(data.trafficPaintBuffer, &data.trafficPaint);
-        layerUniforms.set(idLineTrafficPaintUBO, data.trafficPaintBuffer);
-    } else {
-        layerUniforms.set(idLineTrafficPaintUBO, {});
-    }
+    // A tile may still draw its previous traffic shader while a new layout is pending.
+    if (parameters.staticData.trafficPaintBuffer)
+        layerUniforms.set(idLineTrafficPaintUBO, parameters.staticData.trafficPaintBuffer);
 #endif
 
 #if MLN_RENDER_BACKEND_METAL
