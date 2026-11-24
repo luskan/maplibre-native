@@ -398,10 +398,6 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
         propertiesAsUniforms.second.clear();
 #if MLN_RENDER_BACKEND_OPENGL
         const bool trafficProfile = bucket.pathDistances && evaluated.get<LineTrafficMarker>().constantOr(1.f) != 0.f;
-        if (trafficProfile && !paintParameters.staticData.trafficPaintBuffer) {
-            auto& data = paintParameters.staticData;
-            context.emplaceOrUpdateUniformBuffer(data.trafficPaintBuffer, &data.trafficPaint);
-        }
         if (!trafficProfile) {
             propertiesAsUniforms.first.emplace("a_path_distance");
             propertiesAsUniforms.second.emplace(idLinePathDistanceVertexAttribute);

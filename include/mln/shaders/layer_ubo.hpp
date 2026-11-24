@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mln/util/color.hpp>
+#include <mln/renderer/line_traffic_paint.hpp>
 
 #include <array>
 #include <cstdint>
@@ -46,8 +47,15 @@ struct alignas(16) GlobalPaintParamsUBO {
     /* 36 */ float pixel_ratio;
     /* 40 */ float map_zoom;
     /* 44 */ float pad1;
+#if MLN_RENDER_BACKEND_OPENGL
+    LineTrafficPaint traffic;
+#endif
 };
+#if MLN_RENDER_BACKEND_OPENGL
+static_assert(sizeof(GlobalPaintParamsUBO) == 11 * 16);
+#else
 static_assert(sizeof(GlobalPaintParamsUBO) == 3 * 16);
+#endif
 
 #if MLN_RENDER_BACKEND_VULKAN
 struct alignas(16) GlobalPlatformParamsUBO {

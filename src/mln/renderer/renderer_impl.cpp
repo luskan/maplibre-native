@@ -182,8 +182,6 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
 
     const auto& renderTreeParameters = renderTree.getParameters();
 #if MLN_RENDER_BACKEND_OPENGL
-    staticData->trafficPaint = trafficPaint;
-    if (staticData->trafficPaintBuffer) staticData->trafficPaintBuffer->update(&trafficPaint, sizeof(trafficPaint));
     if (std::exchange(trafficAtlasChanged, false)) {
         staticData->trafficAtlas.reset();
         staticData->trafficAtlasAspect = 0;
@@ -330,6 +328,9 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
         .pixel_ratio = parameters.pixelRatio,
         .map_zoom = static_cast<float>(parameters.state.getZoom()),
         .pad1 = 0,
+#if MLN_RENDER_BACKEND_OPENGL
+        .traffic = trafficPaint,
+#endif
     };
     auto& globalUniforms = context.mutableGlobalUniformBuffers();
     globalUniforms.createOrUpdate(shaders::idGlobalPaintParamsUBO, &globalPaintParamsUBO, context);

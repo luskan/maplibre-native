@@ -4,20 +4,18 @@
 namespace mln {
 namespace shaders {
 
-UniformBlockInfo::UniformBlockInfo(std::string_view name_, std::size_t id_, bool optional_)
+UniformBlockInfo::UniformBlockInfo(std::string_view name_, std::size_t id_)
     : name(name_),
       id(id_),
-      binding(id_),
-      optional(optional_) {}
+      binding(id_) {}
 
 AttributeInfo::AttributeInfo(std::string_view name_, std::size_t id_)
     : name(name_),
       id(id_) {}
 
-TextureInfo::TextureInfo(std::string_view name_, std::size_t id_, bool optional_)
+TextureInfo::TextureInfo(std::string_view name_, std::size_t id_)
     : name(name_),
-      id(id_),
-      optional(optional_) {}
+      id(id_) {}
 
 // Background
 using BackgroundShaderInfo = ShaderInfo<BuiltIn::BackgroundShader, gfx::Backend::Type::OpenGL>;
@@ -342,7 +340,6 @@ const std::vector<TextureInfo> ColorReliefShaderInfo::textures = {
 using LineShaderInfo = ShaderInfo<BuiltIn::LineShader, gfx::Backend::Type::OpenGL>;
 
 const std::vector<UniformBlockInfo> LineShaderInfo::uniformBlocks = {
-    UniformBlockInfo{"LineTrafficPaintUBO", idLineTrafficPaintUBO, true},
     UniformBlockInfo{"GlobalPaintParamsUBO", idGlobalPaintParamsUBO},
     UniformBlockInfo{"LineDrawableUBO", idLineDrawableUBO},
     UniformBlockInfo{"LineEvaluatedPropsUBO", idLineEvaluatedPropsUBO},
@@ -361,11 +358,10 @@ const std::vector<AttributeInfo> LineShaderInfo::attributes = {
     AttributeInfo{"a_traffic_marker", idLineTrafficMarkerVertexAttribute},
     AttributeInfo{"a_traffic_origin", idLineTrafficOriginVertexAttribute},
 };
-const std::vector<TextureInfo> LineShaderInfo::textures = {TextureInfo{"u_traffic_atlas", idLineTrafficAtlasTexture, true}};
+const std::vector<TextureInfo> LineShaderInfo::textures = {TextureInfo{"u_traffic_atlas", idLineTrafficAtlasTexture}};
 
 using LineRoadShaderInfo = ShaderInfo<BuiltIn::LineRoadShader, gfx::Backend::Type::OpenGL>;
 const std::vector<UniformBlockInfo> LineRoadShaderInfo::uniformBlocks = {
-    UniformBlockInfo{"LineTrafficPaintUBO", idLineTrafficPaintUBO, true},
     UniformBlockInfo{"GlobalPaintParamsUBO", idGlobalPaintParamsUBO},
     UniformBlockInfo{"LineDrawableUBO", idLineDrawableUBO},
     UniformBlockInfo{"LineEvaluatedPropsUBO", idLineEvaluatedPropsUBO},
@@ -391,7 +387,7 @@ const std::vector<AttributeInfo> LineRoadShaderInfo::attributes = {
 };
 const std::vector<TextureInfo> LineRoadShaderInfo::textures = {
     TextureInfo{"u_road_guard", idLineImageTexture},
-    TextureInfo{"u_traffic_atlas", idLineTrafficAtlasTexture, true},
+    TextureInfo{"u_traffic_atlas", idLineTrafficAtlasTexture},
 };
 
 // Location Indicator

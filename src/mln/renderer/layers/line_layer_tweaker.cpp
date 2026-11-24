@@ -195,11 +195,6 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
     }
     auto& layerUniforms = layerGroup.mutableUniformBuffers();
     layerUniforms.set(idLineEvaluatedPropsUBO, evaluatedPropsUniformBuffer);
-#if MLN_RENDER_BACKEND_OPENGL
-    // A tile may still draw its previous traffic shader while a new layout is pending.
-    if (parameters.staticData.trafficPaintBuffer)
-        layerUniforms.set(idLineTrafficPaintUBO, parameters.staticData.trafficPaintBuffer);
-#endif
 
 #if MLN_RENDER_BACKEND_METAL
     // GPU Expressions

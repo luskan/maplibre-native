@@ -24,16 +24,11 @@ layout (std140) uniform GlobalPaintParamsUBO {
     highp float u_pixel_ratio;
     highp float u_map_zoom;
     lowp float global_pad1;
-};
-
-#ifndef HAS_UNIFORM_u_path_distance
-layout (std140) uniform LineTrafficPaintUBO {
     highp vec4 u_traffic_widths[5];
     highp vec4 u_traffic_scales;
     highp vec4 u_traffic_outline;
     highp vec4 u_traffic_insets;
 };
-#endif
 
 layout (std140) uniform LineDrawableUBO {
     highp mat4 u_matrix;

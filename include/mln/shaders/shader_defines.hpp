@@ -135,9 +135,6 @@ enum {
 enum {
     idLineEvaluatedPropsUBO = getEnumValue(lineLayerSSBOCount, layerUBOStartId),
     idLineExpressionUBO,
-#if MLN_RENDER_BACKEND_OPENGL
-    idLineTrafficPaintUBO,
-#endif
     lineLayerUBOCount
 };
 
