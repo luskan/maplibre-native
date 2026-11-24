@@ -1,4 +1,5 @@
 #include <mln/tile/geometry_tile.hpp>
+#include <mln/renderer/source_state.hpp>
 
 #include <mln/actor/scheduler.hpp>
 #include <mln/geometry/feature_index.hpp>
@@ -420,6 +421,7 @@ void GeometryTile::onLayout(std::shared_ptr<LayoutResult>&& result, const uint64
     const ErrorScope errorScope{observer};
 
     layoutResult = std::move(result);
+    featureStateVersion = 0;
     if (layoutResult) optimizationAccepted(layoutResult->optimizations);
     if (!atlasTextures) {
         atlasTextures = std::make_shared<TileAtlasTextures>();
@@ -684,29 +686,29 @@ void GeometryTile::performedFadePlacement() {
     }
 }
 
-void GeometryTile::setFeatureState(const LayerFeatureStates& states) {
+void GeometryTile::setFeatureState(const LayerFeatureStates& states, FeatureStateUpdate update) {
     MLN_TRACE_FUNC();
 
     const auto layers = getData();
-    if ((layers == nullptr) || states.empty() || !layoutResult) {
+    if (!layers || !layoutResult) {
         return;
     }
 
+    static const FeatureStates empty;
     for (auto& layerIdToLayerRenderData = layoutResult->layerRenderData;
          auto& [layerID, renderData] : layerIdToLayerRenderData) {
-        std::string sourceLayerId = renderData.layerProperties->baseImpl->sourceLayer;
+        const auto& bucket = renderData.bucket;
+        if (!bucket || !bucket->hasData()) {
+            continue;
+        }
+        const auto& sourceLayerId = renderData.layerProperties->baseImpl->sourceLayer;
+        const auto entry = states.find(sourceLayerId);
+        if (entry == states.end() && update == FeatureStateUpdate::Delta) {
+            continue;
+        }
         if (const auto sourceLayer = layers->getLayer(sourceLayerId)) {
-            auto entry = states.find(sourceLayerId);
-            if (entry == states.end()) {
-                continue;
-            }
-            const auto& featureStates = entry->second;
-            if (featureStates.empty()) {
-                continue;
-            }
-            if (const auto bucket = renderData.bucket; bucket && bucket->hasData()) {
-                bucket->update(featureStates, *sourceLayer, layerID, layoutResult->imageAtlas.patternPositions);
-            }
+            const auto& featureStates = entry == states.end() ? empty : entry->second;
+            bucket->update(featureStates, *sourceLayer, layerID, layoutResult->imageAtlas.patternPositions, update);
         }
     }
 }

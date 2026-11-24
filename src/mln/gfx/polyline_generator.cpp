@@ -119,6 +119,8 @@ void PolylineGenerator<PLV, PS>::generate(const GeometryCoordinates& coordinates
     const style::LineCapType beginCap = options.beginCap;
     const style::LineCapType endCap = options.type == FeatureType::Polygon ? style::LineCapType::Butt : options.endCap;
 
+    pathDistances = options.pathDistances;
+    distanceBase = 0;
     double distance = 0.0;
     bool startOfLine = true;
     std::optional<GeometryCoordinate> currentCoordinate;
@@ -475,7 +477,8 @@ void PolylineGenerator<PLV, PS>::generate(const GeometryCoordinates& coordinates
                                  true,
                                  startVertex,
                                  triangleStore,
-                                 options.clipDistances);
+                                 options.clipDistances,
+                                 !middleVertex);
 
                 // The segment is done. Unset vertices to disconnect segments.
                 e1 = e2 = -1;
@@ -492,7 +495,8 @@ void PolylineGenerator<PLV, PS>::generate(const GeometryCoordinates& coordinates
                                  true,
                                  startVertex,
                                  triangleStore,
-                                 options.clipDistances);
+                                 options.clipDistances,
+                                 !middleVertex);
 
                 addCurrentVertex(*currentCoordinate,
                                  distance,
@@ -563,7 +567,13 @@ void PolylineGenerator<PLV, PS>::addCurrentVertex(const GeometryCoordinate& curr
                                                   bool round,
                                                   std::size_t startVertex,
                                                   std::vector<TriangleElement>& triangleStore,
-                                                  std::optional<PolylineGeneratorDistances> lineDistances) {
+                                                  std::optional<PolylineGeneratorDistances> lineDistances,
+                                                  bool endCapVertex) {
+    if (pathDistances) {
+        // Negative values mark outer cap vertices. Their path position is still needed for ordinary round caps.
+        const auto along = static_cast<float>(distanceBase + distance);
+        pathDistances->extend(2, endCapVertex ? -1.0f - along : along);
+    }
     Point<double> extrude = normal;
     const double scaledDistance = lineDistances ? lineDistances->scaleToMaxLineDistance(distance) : distance;
 
@@ -601,9 +611,10 @@ void PolylineGenerator<PLV, PS>::addCurrentVertex(const GeometryCoordinate& curr
     // vertex again with a distance of zero. The max distance is determined by
     // the number of bits we allocate to `linesofar`.
     if (distance > MAX_LINE_DISTANCE / 2.0f && !lineDistances) {
+        distanceBase += distance;
         distance = 0.0;
         addCurrentVertex(
-            currentCoordinate, distance, normal, endLeft, endRight, round, startVertex, triangleStore, lineDistances);
+            currentCoordinate, distance, normal, endLeft, endRight, round, startVertex, triangleStore, lineDistances, endCapVertex);
     }
 }
 
@@ -615,6 +626,7 @@ void PolylineGenerator<PLV, PS>::addPieSliceVertex(const GeometryCoordinate& cur
                                                    std::size_t startVertex,
                                                    std::vector<TriangleElement>& triangleStore,
                                                    std::optional<PolylineGeneratorDistances> lineDistances) {
+    if (pathDistances) pathDistances->emplace_back(static_cast<float>(distanceBase + distance));
     Point<double> flippedExtrude = extrude * (lineTurnsLeft ? -1.0 : 1.0);
     if (lineDistances) {
         distance = lineDistances->scaleToMaxLineDistance(distance);

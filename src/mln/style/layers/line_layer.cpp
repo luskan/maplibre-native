@@ -481,6 +481,114 @@ TransitionOptions LineLayer::getLineRoadLengthTransition() const {
     return impl().paint.template get<LineRoadLength>().options;
 }
 
+PropertyValue<float> LineLayer::getDefaultLineRoadProfileRange() {
+    return {2047.f};
+}
+
+const PropertyValue<float>& LineLayer::getLineRoadProfileRange() const {
+    return impl().paint.template get<LineRoadProfileRange>().value;
+}
+
+void LineLayer::setLineRoadProfileRange(const PropertyValue<float>& value) {
+    if (value == getLineRoadProfileRange())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadProfileRange>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineRoadProfileRangeTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineRoadProfileRange>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineRoadProfileRangeTransition() const {
+    return impl().paint.template get<LineRoadProfileRange>().options;
+}
+
+PropertyValue<Color> LineLayer::getDefaultLineTrafficLeftColor() {
+    return {{}};
+}
+
+const PropertyValue<Color>& LineLayer::getLineTrafficLeftColor() const {
+    return impl().paint.template get<LineTrafficLeftColor>().value;
+}
+
+void LineLayer::setLineTrafficLeftColor(const PropertyValue<Color>& value) {
+    if (value == getLineTrafficLeftColor())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineTrafficLeftColor>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineTrafficLeftColorTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineTrafficLeftColor>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineTrafficLeftColorTransition() const {
+    return impl().paint.template get<LineTrafficLeftColor>().options;
+}
+
+PropertyValue<float> LineLayer::getDefaultLineTrafficMarker() {
+    return {0.f};
+}
+
+const PropertyValue<float>& LineLayer::getLineTrafficMarker() const {
+    return impl().paint.template get<LineTrafficMarker>().value;
+}
+
+void LineLayer::setLineTrafficMarker(const PropertyValue<float>& value) {
+    if (value == getLineTrafficMarker())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineTrafficMarker>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineTrafficMarkerTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineTrafficMarker>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineTrafficMarkerTransition() const {
+    return impl().paint.template get<LineTrafficMarker>().options;
+}
+
+PropertyValue<float> LineLayer::getDefaultLineTrafficOrigin() {
+    return {0.f};
+}
+
+const PropertyValue<float>& LineLayer::getLineTrafficOrigin() const {
+    return impl().paint.template get<LineTrafficOrigin>().value;
+}
+
+void LineLayer::setLineTrafficOrigin(const PropertyValue<float>& value) {
+    if (value == getLineTrafficOrigin())
+        return;
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineTrafficOrigin>().value = value;
+    baseImpl = std::move(impl_);
+    observer->onLayerChanged(*this);
+}
+
+void LineLayer::setLineTrafficOriginTransition(const TransitionOptions& options) {
+    auto impl_ = mutableImpl();
+    impl_->paint.template get<LineTrafficOrigin>().options = options;
+    baseImpl = std::move(impl_);
+}
+
+TransitionOptions LineLayer::getLineTrafficOriginTransition() const {
+    return impl().paint.template get<LineTrafficOrigin>().options;
+}
+
 PropertyValue<std::array<float, 2>> LineLayer::getDefaultLineTranslate() {
     return {{{0.f, 0.f}}};
 }
@@ -567,7 +675,7 @@ using namespace conversion;
 
 namespace {
 
-constexpr uint8_t kPaintPropertyCount = 30u;
+constexpr uint8_t kPaintPropertyCount = 38u;
 
 enum class Property : uint8_t {
     LineBlur,
@@ -582,6 +690,10 @@ enum class Property : uint8_t {
     LineRoadFillWidth,
     LineRoadGuardWidth,
     LineRoadLength,
+    LineRoadProfileRange,
+    LineTrafficLeftColor,
+    LineTrafficMarker,
+    LineTrafficOrigin,
     LineTranslate,
     LineTranslateAnchor,
     LineWidth,
@@ -597,6 +709,10 @@ enum class Property : uint8_t {
     LineRoadFillWidthTransition,
     LineRoadGuardWidthTransition,
     LineRoadLengthTransition,
+    LineRoadProfileRangeTransition,
+    LineTrafficLeftColorTransition,
+    LineTrafficMarkerTransition,
+    LineTrafficOriginTransition,
     LineTranslateTransition,
     LineTranslateAnchorTransition,
     LineWidthTransition,
@@ -626,6 +742,10 @@ constexpr const auto layerProperties = mapbox::eternal::hash_map<mapbox::eternal
      {"line-road-fill-width", toUint8(Property::LineRoadFillWidth)},
      {"line-road-guard-width", toUint8(Property::LineRoadGuardWidth)},
      {"line-road-length", toUint8(Property::LineRoadLength)},
+     {"line-road-profile-range", toUint8(Property::LineRoadProfileRange)},
+     {"line-traffic-left-color", toUint8(Property::LineTrafficLeftColor)},
+     {"line-traffic-marker", toUint8(Property::LineTrafficMarker)},
+     {"line-traffic-origin", toUint8(Property::LineTrafficOrigin)},
      {"line-translate", toUint8(Property::LineTranslate)},
      {"line-translate-anchor", toUint8(Property::LineTranslateAnchor)},
      {"line-width", toUint8(Property::LineWidth)},
@@ -641,6 +761,10 @@ constexpr const auto layerProperties = mapbox::eternal::hash_map<mapbox::eternal
      {"line-road-fill-width-transition", toUint8(Property::LineRoadFillWidthTransition)},
      {"line-road-guard-width-transition", toUint8(Property::LineRoadGuardWidthTransition)},
      {"line-road-length-transition", toUint8(Property::LineRoadLengthTransition)},
+     {"line-road-profile-range-transition", toUint8(Property::LineRoadProfileRangeTransition)},
+     {"line-traffic-left-color-transition", toUint8(Property::LineTrafficLeftColorTransition)},
+     {"line-traffic-marker-transition", toUint8(Property::LineTrafficMarkerTransition)},
+     {"line-traffic-origin-transition", toUint8(Property::LineTrafficOriginTransition)},
      {"line-translate-transition", toUint8(Property::LineTranslateTransition)},
      {"line-translate-anchor-transition", toUint8(Property::LineTranslateAnchorTransition)},
      {"line-width-transition", toUint8(Property::LineWidthTransition)},
@@ -677,6 +801,14 @@ StyleProperty getLayerProperty(const LineLayer& layer, Property property) {
             return makeStyleProperty(layer.getLineRoadGuardWidth());
         case Property::LineRoadLength:
             return makeStyleProperty(layer.getLineRoadLength());
+        case Property::LineRoadProfileRange:
+            return makeStyleProperty(layer.getLineRoadProfileRange());
+        case Property::LineTrafficLeftColor:
+            return makeStyleProperty(layer.getLineTrafficLeftColor());
+        case Property::LineTrafficMarker:
+            return makeStyleProperty(layer.getLineTrafficMarker());
+        case Property::LineTrafficOrigin:
+            return makeStyleProperty(layer.getLineTrafficOrigin());
         case Property::LineTranslate:
             return makeStyleProperty(layer.getLineTranslate());
         case Property::LineTranslateAnchor:
@@ -707,6 +839,14 @@ StyleProperty getLayerProperty(const LineLayer& layer, Property property) {
             return makeStyleProperty(layer.getLineRoadGuardWidthTransition());
         case Property::LineRoadLengthTransition:
             return makeStyleProperty(layer.getLineRoadLengthTransition());
+        case Property::LineRoadProfileRangeTransition:
+            return makeStyleProperty(layer.getLineRoadProfileRangeTransition());
+        case Property::LineTrafficLeftColorTransition:
+            return makeStyleProperty(layer.getLineTrafficLeftColorTransition());
+        case Property::LineTrafficMarkerTransition:
+            return makeStyleProperty(layer.getLineTrafficMarkerTransition());
+        case Property::LineTrafficOriginTransition:
+            return makeStyleProperty(layer.getLineTrafficOriginTransition());
         case Property::LineTranslateTransition:
             return makeStyleProperty(layer.getLineTranslateTransition());
         case Property::LineTranslateAnchorTransition:
@@ -758,7 +898,9 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
     if (property == Property::LineBlur || property == Property::LineGapWidth || property == Property::LineOffset ||
         property == Property::LineOpacity || property == Property::LineRoadFillWidth ||
-        property == Property::LineRoadLength || property == Property::LineWidth || property == Property::LineSortKey) {
+        property == Property::LineRoadLength || property == Property::LineRoadProfileRange ||
+        property == Property::LineTrafficMarker || property == Property::LineTrafficOrigin ||
+        property == Property::LineWidth || property == Property::LineSortKey) {
         Error error;
         const auto& typedValue = convert<PropertyValue<float>>(value, error, true, false);
         if (!typedValue) {
@@ -795,6 +937,21 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
             return std::nullopt;
         }
 
+        if (property == Property::LineRoadProfileRange) {
+            setLineRoadProfileRange(*typedValue);
+            return std::nullopt;
+        }
+
+        if (property == Property::LineTrafficMarker) {
+            setLineTrafficMarker(*typedValue);
+            return std::nullopt;
+        }
+
+        if (property == Property::LineTrafficOrigin) {
+            setLineTrafficOrigin(*typedValue);
+            return std::nullopt;
+        }
+
         if (property == Property::LineWidth) {
             setLineWidth(*typedValue);
             return std::nullopt;
@@ -805,7 +962,8 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
             return std::nullopt;
         }
     }
-    if (property == Property::LineColor || property == Property::LineRoadCasingColor) {
+    if (property == Property::LineColor || property == Property::LineRoadCasingColor ||
+        property == Property::LineTrafficLeftColor) {
         Error error;
         const auto& typedValue = convert<PropertyValue<Color>>(value, error, true, false);
         if (!typedValue) {
@@ -819,6 +977,11 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
         if (property == Property::LineRoadCasingColor) {
             setLineRoadCasingColor(*typedValue);
+            return std::nullopt;
+        }
+
+        if (property == Property::LineTrafficLeftColor) {
+            setLineTrafficLeftColor(*typedValue);
             return std::nullopt;
         }
     }
@@ -989,6 +1152,26 @@ std::optional<Error> LineLayer::setPropertyInternal(const std::string& name, con
 
     if (property == Property::LineRoadLengthTransition) {
         setLineRoadLengthTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineRoadProfileRangeTransition) {
+        setLineRoadProfileRangeTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineTrafficLeftColorTransition) {
+        setLineTrafficLeftColorTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineTrafficMarkerTransition) {
+        setLineTrafficMarkerTransition(*transition);
+        return std::nullopt;
+    }
+
+    if (property == Property::LineTrafficOriginTransition) {
+        setLineTrafficOriginTransition(*transition);
         return std::nullopt;
     }
 

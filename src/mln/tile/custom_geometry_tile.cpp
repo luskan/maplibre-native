@@ -87,6 +87,27 @@ CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData
         return std::make_shared<const TileFeatureCollection>();
     }
 
+    if (!tileOptions.wrap && !tileOptions.clip && std::ranges::any_of(features, style::retainShortTileLine)) {
+        const auto spec = style::customTileConversionSpec(tileOptions, tileID.z);
+        auto result = std::make_shared<TileFeatureCollection>();
+        result->reserve(features.size());
+        mapbox::geojsonvt::detail::vt_features batch;
+        double tolerance = spec.normalizedTolerance;
+        const auto flush = [&] {
+            mapbox::geojsonvt::detail::InternalTile converted(batch, tileID.z, tileID.x, tileID.y,
+                                                              spec.extent, tolerance, false);
+            std::ranges::move(converted.tile.features, std::back_inserter(*result));
+            batch.clear();
+        };
+        for (const auto& feature : features) {
+            const double next = style::retainShortTileLine(feature) ? 0.0 : spec.normalizedTolerance;
+            if (!batch.empty() && next != tolerance) flush();
+            tolerance = next;
+            batch.emplace_back(mapbox::geojsonvt::detail::project{tolerance}(feature.geometry), feature.properties, feature.id);
+        }
+        flush();
+        return result;
+    }
     return toSharedFeatureCollection(mapbox::geojsonvt::geoJSONToTile(
                                          features,
                                          tileID.z,

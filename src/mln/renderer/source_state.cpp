@@ -4,7 +4,20 @@
 #include <mln/util/instrumentation.hpp>
 #include <mln/util/logging.hpp>
 
+#include <bit>
+
 namespace mln {
+namespace {
+
+bool sameScalarState(const Value& current, const Value& next) {
+    if (const auto* number = current.getDouble()) {
+        const auto* other = next.getDouble();
+        return other && std::bit_cast<uint64_t>(*number) == std::bit_cast<uint64_t>(*other);
+    }
+    return !current.getArray() && !current.getObject() && current == next;
+}
+
+} // namespace
 
 void SourceFeatureState::updateState(const std::optional<std::string>& sourceLayerID,
                                      const std::string& featureID,
@@ -46,65 +59,87 @@ void SourceFeatureState::coalesceChanges(std::vector<RenderTile>& tiles) {
     MLN_TRACE_FUNC();
 
     LayerFeatureStates changes;
-    for (const auto& layerStatesEntry : stateChanges) {
-        const auto& sourceLayer = layerStatesEntry.first;
-        FeatureStates layerStates;
-        for (const auto& featureStatesEntry : stateChanges[sourceLayer]) {
-            const auto& featureID = featureStatesEntry.first;
-            for (const auto& stateEntry : stateChanges[sourceLayer][featureID]) {
-                const auto& stateKey = stateEntry.first;
-                const auto& stateVal = stateEntry.second;
-
-                auto currentState = currentStates[sourceLayer][featureID].find(stateKey);
-                if (currentState != currentStates[sourceLayer][featureID].end()) {
-                    currentState->second = stateVal;
-                } else {
-                    currentStates[sourceLayer][featureID].insert(std::make_pair(stateKey, stateVal));
+    for (const auto& [sourceLayer, layerUpdates] : stateChanges) {
+        auto& currentLayer = currentStates[sourceLayer];
+        for (const auto& [featureID, updates] : layerUpdates) {
+            auto& current = currentLayer[featureID];
+            bool changed = false;
+            for (const auto& [key, value] : updates) {
+                auto [entry, inserted] = current.try_emplace(key, value);
+                if (inserted) {
+                    changed = true;
+                } else if (!sameScalarState(entry->second, value)) {
+                    entry->second = value;
+                    changed = true;
                 }
             }
-            layerStates[featureID] = currentStates[sourceLayer][featureID];
+            if (changed) {
+                changes[sourceLayer].emplace(featureID, current);
+            }
         }
-        changes[sourceLayer] = std::move(layerStates);
     }
 
-    for (const auto& layerStatesEntry : deletedStates) {
-        const auto& sourceLayer = layerStatesEntry.first;
-        FeatureStates layerStates = {{}, {}};
-
-        if (deletedStates[sourceLayer].empty()) {
-            for (const auto& featureStatesEntry : currentStates[sourceLayer]) {
-                const auto& featureID = featureStatesEntry.first;
-                layerStates[featureID] = {};
-                currentStates[sourceLayer][featureID] = {};
+    for (const auto& [sourceLayer, removals] : deletedStates) {
+        const auto layer = currentStates.find(sourceLayer);
+        if (layer == currentStates.end()) {
+            continue;
+        }
+        auto& features = layer->second;
+        if (removals.empty()) {
+            auto& removed = changes[sourceLayer];
+            for (const auto& [id, state] : features) {
+                removed[id].clear();
             }
-        } else {
-            for (const auto& feature : deletedStates[sourceLayer]) {
-                const auto& featureID = feature.first;
-                bool deleteWholeFeatureState = deletedStates[sourceLayer][featureID].empty();
-                if (deleteWholeFeatureState) {
-                    currentStates[sourceLayer][featureID] = {};
-                } else {
-                    for (const auto& stateEntry : deletedStates[sourceLayer][featureID]) {
-                        currentStates[sourceLayer][featureID].erase(stateEntry.first);
-                    }
+            currentStates.erase(layer);
+            continue;
+        }
+        for (const auto& [id, keys] : removals) {
+            const auto feature = features.find(id);
+            if (feature == features.end()) {
+                continue;
+            }
+            auto& current = feature->second;
+            bool changed = keys.empty();
+            if (changed) {
+                current.clear();
+            } else {
+                for (const auto& [key, value] : keys) {
+                    changed |= current.erase(key) != 0;
                 }
-                layerStates[featureID] = currentStates[sourceLayer][featureID];
+            }
+            if (changed) {
+                changes[sourceLayer].insert_or_assign(id, current);
+                if (current.empty()) {
+                    features.erase(feature);
+                }
             }
         }
-        changes[sourceLayer] = std::move(layerStates);
+        if (features.empty()) {
+            currentStates.erase(layer);
+        }
     }
 
     stateChanges.clear();
     deletedStates.clear();
 
-    changes.insert(currentStates.begin(), currentStates.end());
-
-    if (changes.empty()) {
-        return;
+    if (!changes.empty()) {
+        ++version;
     }
 
+    // A tile that holds the previous version gets this frame's changes. A tile with new buckets, or one that was
+    // not rendered in a frame with changes, gets the whole state. A tile that is up to date gets nothing.
     for (auto& tile : tiles) {
-        tile.setFeatureState(changes);
+        auto& tileVersion = tile.featureStateVersion();
+        if (tileVersion == version) {
+            continue;
+        }
+        const bool previous = !changes.empty() && tileVersion != 0 && tileVersion + 1 == version;
+        if (previous) {
+            tile.setFeatureState(changes, FeatureStateUpdate::Delta);
+        } else {
+            tile.setFeatureState(currentStates, FeatureStateUpdate::Snapshot);
+        }
+        tileVersion = version;
     }
 }
 
@@ -119,8 +154,9 @@ void SourceFeatureState::removeState(const std::optional<std::string>& sourceLay
     }
 
     if (stateKey && featureID) {
-        if (!deletedStates.contains(sourceLayer) && !deletedStates[sourceLayer].contains(*featureID)) {
-            deletedStates[sourceLayer][*featureID][*stateKey] = {};
+        auto [feature, inserted] = deletedStates[sourceLayer].try_emplace(*featureID);
+        if (inserted || !feature->second.empty()) {
+            feature->second.try_emplace(*stateKey, Value{});
         }
     } else if (featureID) {
         bool updateInQueue = stateChanges.contains(sourceLayer) && stateChanges[sourceLayer].contains(*featureID);

@@ -3,6 +3,8 @@
 #include <mln/util/ignore.hpp>
 #include <mln/util/monotonic_timer.hpp>
 
+#include <algorithm>
+#include <cassert>
 #include <memory>
 #include <vector>
 
@@ -11,6 +13,24 @@ namespace gfx {
 
 struct VertexBufferBase {
     virtual ~VertexBufferBase() = default;
+};
+
+struct VertexUpdateRange {
+    std::size_t begin = 0;
+    std::size_t end = 0;
+
+    bool empty() const { return begin == end; }
+
+    void include(std::size_t first, std::size_t last) {
+        assert(first < last);
+        if (empty()) {
+            begin = first;
+            end = last;
+        } else {
+            begin = std::min(begin, first);
+            end = std::max(end, last);
+        }
+    }
 };
 
 class VertexVectorBase {
@@ -28,7 +48,10 @@ public:
     virtual std::size_t getRawCount() const = 0;
 
     VertexBufferBase* getBuffer() const { return buffer.get(); }
-    void setBuffer(std::unique_ptr<VertexBufferBase>&& value) { buffer = std::move(value); }
+    void setBuffer(std::unique_ptr<VertexBufferBase>&& value) {
+        buffer = std::move(value);
+        recordBufferUpdate();
+    }
 
     std::chrono::duration<double> getLastModified() const { return lastModified; }
     bool isModifiedAfter(std::chrono::duration<double> t) const { return t < lastModified; }
@@ -37,7 +60,30 @@ public:
         if (dirty || force) {
             lastModified = util::MonotonicTimer::now();
             dirty = false;
+            fullUpdatePending = true;
+            modifiedBytes = {};
         }
+    }
+
+    void updateModifiedRange(std::size_t begin, std::size_t end) {
+        assert(begin < end && end <= getRawCount() * getRawSize());
+        if (dirty) {
+            updateModified();
+            return;
+        }
+        lastModified = util::MonotonicTimer::now();
+        if (!fullUpdatePending) {
+            modifiedBytes.include(begin, end);
+        }
+    }
+
+    VertexUpdateRange getModifiedBytes() const {
+        return dirty || fullUpdatePending ? VertexUpdateRange{} : modifiedBytes;
+    }
+
+    void recordBufferUpdate() {
+        fullUpdatePending = !buffer;
+        modifiedBytes = {};
     }
 
     // Indicates that the owner/producer will not modify this again
@@ -49,6 +95,10 @@ protected:
     bool released = false;
 
     std::chrono::duration<double> lastModified = util::MonotonicTimer::now();
+
+private:
+    bool fullUpdatePending = true;
+    VertexUpdateRange modifiedBytes;
 };
 using VertexVectorBasePtr = std::shared_ptr<VertexVectorBase>;
 

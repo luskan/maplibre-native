@@ -1,6 +1,8 @@
 #pragma once
 
 #include <mln/gfx/vertex_buffer.hpp>
+#include <mln/renderer/line_traffic_paint.hpp>
+#include <mln/gfx/uniform_buffer.hpp>
 #include <mln/gfx/index_buffer.hpp>
 #include <mln/gfx/renderbuffer.hpp>
 #include <mln/gfx/shader_registry.hpp>
@@ -48,6 +50,10 @@ public:
     std::optional<gfx::Renderbuffer<gfx::RenderbufferPixelType::Depth>> depthRenderbuffer;
     bool has3D = false;
     bool uploaded = false;
+    gfx::Texture2DPtr trafficAtlas;
+    float trafficAtlasAspect = 0;
+    LineTrafficPaint trafficPaint;
+    gfx::UniformBufferPtr trafficPaintBuffer;
 
     std::unique_ptr<gfx::ShaderRegistry> shaders;
 

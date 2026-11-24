@@ -1,8 +1,10 @@
 #pragma once
 
 #include <mln/renderer/query.hpp>
+#include <mln/renderer/line_traffic_paint.hpp>
 #include <mln/annotation/annotation.hpp>
 #include <mln/util/geo.hpp>
+#include <mln/util/image.hpp>
 #include <mln/util/geojson.hpp>
 
 #include <functional>
@@ -50,6 +52,9 @@ public:
     void markContextLost();
 
     void setObserver(RendererObserver*);
+    // Eight columns of premultiplied marking images, repeated along road lines.
+    void setLineTrafficPaint(const LineTrafficPaint&);
+    void setLineTrafficAtlas(std::shared_ptr<PremultipliedImage>, bool mipmapped = false);
 
     void render(const std::shared_ptr<UpdateParameters>&);
 

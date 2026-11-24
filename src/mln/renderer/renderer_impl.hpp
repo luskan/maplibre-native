@@ -54,6 +54,10 @@ private:
     const float pixelRatio;
     std::unique_ptr<RenderStaticData> staticData;
     gfx::DynamicTextureAtlasPtr dynamicTextureAtlas;
+    std::shared_ptr<PremultipliedImage> trafficAtlas;
+    bool trafficAtlasChanged = false;
+    bool trafficAtlasMipmapped = false;
+    LineTrafficPaint trafficPaint;
     bool styleLoaded = false;
 
     enum class RenderState {

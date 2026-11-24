@@ -6,6 +6,7 @@
 namespace mln {
 
 class RenderTile;
+enum class FeatureStateUpdate { Delta, Snapshot };
 
 class SourceFeatureState {
 public:
@@ -25,9 +26,12 @@ public:
     void coalesceChanges(std::vector<RenderTile>& tiles);
 
 private:
+    // Only live features are stored here. Empty removals belong to the frame delta.
     LayerFeatureStates currentStates;
     LayerFeatureStates stateChanges;
     LayerFeatureStates deletedStates;
+    // Bumped in each coalesceChanges call that has changes.
+    uint64_t version = 0;
 };
 
 } // namespace mln

@@ -24,6 +24,7 @@ class Placement;
 class TransformState;
 class BucketPlacementData;
 class RenderTile;
+enum class FeatureStateUpdate;
 
 class Bucket {
 public:
@@ -43,7 +44,11 @@ public:
                             std::size_t,
                             const CanonicalTileID&) {}
 
-    virtual void update(const FeatureStates&, const GeometryTileLayer&, const std::string&, const ImagePositions&) {}
+    virtual void update(const FeatureStates&,
+                        const GeometryTileLayer&,
+                        const std::string&,
+                        const ImagePositions&,
+                        FeatureStateUpdate) {}
 
     // As long as this bucket has a Prepare render pass, this function is
     // getting called. Typically, this only happens once when the bucket is

@@ -46,7 +46,6 @@ struct alignas(16) GlobalPaintParamsUBO {
     /* 36 */ float pixel_ratio;
     /* 40 */ float map_zoom;
     /* 44 */ float pad1;
-    /* 48 */
 };
 static_assert(sizeof(GlobalPaintParamsUBO) == 3 * 16);
 

@@ -1,3 +1,4 @@
+#include <mln/renderer/render_static_data.hpp>
 #include <mln/renderer/layers/render_line_layer.hpp>
 
 #include <mln/geometry/feature_index.hpp>
@@ -74,8 +75,16 @@ void RenderLineLayer::evaluate(const PropertyEvaluationParameters& parameters) {
                                                        unevaluated.evaluate(parameters, previousProperties->evaluated));
     auto& evaluated = properties->evaluated;
 
-    passes = (evaluated.get<style::LineOpacity>().constantOr(1.0) > 0 &&
-              evaluated.get<style::LineColor>().constantOr(Color::black()).a > 0 &&
+    bool hasColor = evaluated.get<LineColor>().constantOr(Color::black()).a > 0;
+#if MLN_RENDER_BACKEND_OPENGL
+    const auto& composite = impl_cast(baseImpl).layout.get<LineRoadComposite>();
+    if (!hasColor && (composite.isUndefined() || (composite.isConstant() && !composite.asConstant())) &&
+        evaluated.get<LineDasharray>().from.empty() && unevaluated.get<LinePattern>().isUndefined() &&
+        unevaluated.get<LineGradient>().getValue().isUndefined()) {
+        hasColor = evaluated.get<LineTrafficLeftColor>().constantOr(Color::black()).a > 0;
+    }
+#endif
+    passes = (evaluated.get<style::LineOpacity>().constantOr(1.0) > 0 && hasColor &&
               evaluated.get<style::LineWidth>().constantOr(1.0) > 0)
                  ? RenderPass::Translucent
                  : RenderPass::None;
@@ -303,6 +312,13 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                                        gfx::AttributeDataType::UByte4);
             }
 
+#if MLN_RENDER_BACKEND_OPENGL
+            if (bucket.pathDistances) {
+                if (const auto& attr = vertexAttrs->set(idLinePathDistanceVertexAttribute)) {
+                    attr->setSharedRawData(bucket.pathDistances, 0, 0, sizeof(float), gfx::AttributeDataType::Float);
+                }
+            }
+#endif
             builder.setVertexAttributes(std::move(vertexAttrs));
         };
 
@@ -343,6 +359,14 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 auto const& data = static_cast<LineRoadDrawableData const&>(*drawable.getData());
                 if (data.unguarded != (evaluated.get<LineRoadGuardWidth>() == 0.0f)) return false;
             }
+#if MLN_RENDER_BACKEND_OPENGL
+            const auto type = static_cast<LineLayerTweaker::LineType>(drawable.getType());
+            if (type == LineLayerTweaker::LineType::Simple || type == LineLayerTweaker::LineType::Road) {
+                const auto atlas = evaluated.get<LineTrafficMarker>().constantOr(1.f) != 0.f
+                    ? paintParameters.staticData.trafficAtlas : nullptr;
+                if (drawable.getTexture(idLineTrafficAtlasTexture) != atlas) return false;
+            }
+#endif
             return true;
         };
         if (updateTile(renderPass, tileID, std::move(updateExisting))) {
@@ -372,6 +396,18 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
 
         propertiesAsUniforms.first.clear();
         propertiesAsUniforms.second.clear();
+#if MLN_RENDER_BACKEND_OPENGL
+        const bool trafficProfile = bucket.pathDistances && evaluated.get<LineTrafficMarker>().constantOr(1.f) != 0.f;
+        if (!trafficProfile) {
+            propertiesAsUniforms.first.emplace("a_path_distance");
+            propertiesAsUniforms.second.emplace(idLinePathDistanceVertexAttribute);
+        }
+        if (trafficProfile && !paintParameters.staticData.trafficAtlas) {
+            // This shader variant draws the traffic profile without sampling a marker texture.
+            propertiesAsUniforms.first.emplace("a_no_traffic_atlas");
+            propertiesAsUniforms.second.emplace(shaders::maxAttributeCountPerShader + 1);
+        }
+#endif
 
         auto vertexAttrs = context.createVertexAttributeArray();
         vertexAttrs->readDataDrivenPaintProperties<LineColor,
@@ -498,6 +534,10 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 if (!lineRoadShaderGroup) continue;
                 vertexAttrs->readDataDrivenPaintProperties<LineRoadCasingColor, LineRoadFillWidth, LineRoadLength>(
                     paintPropertyBinders, evaluated, propertiesAsUniforms, idLineRoadCasingColorVertexAttribute);
+                vertexAttrs->readDataDrivenPaintProperties<LineTrafficLeftColor, LineRoadProfileRange>(
+                    paintPropertyBinders, evaluated, propertiesAsUniforms, idLineTrafficLeftColorVertexAttribute);
+                vertexAttrs->readDataDrivenPaintProperties<LineTrafficMarker, LineTrafficOrigin>(
+                    paintPropertyBinders, evaluated, propertiesAsUniforms, idLineTrafficMarkerVertexAttribute);
                 auto shader = lineRoadShaderGroup->getOrCreateShader(context, propertiesAsUniforms, posNormalAttribName);
                 if (!shader) continue;
                 gfx::Texture2DPtr texture;
@@ -517,6 +557,10 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 }
                 if (!unguarded) texture = bucket.roadGuardField->texture;
                 auto builder = createLineBuilder("lineRoad", std::move(shader));
+#if MLN_RENDER_BACKEND_OPENGL
+                if (evaluated.get<LineTrafficMarker>().constantOr(1.f) != 0.f && paintParameters.staticData.trafficAtlas)
+                    builder->setTexture(paintParameters.staticData.trafficAtlas, idLineTrafficAtlasTexture);
+#endif
                 builder->setTexture(texture, idLineImageTexture);
                 addAttributes(*builder, bucket, std::move(vertexAttrs));
                 setSegments(builder, bucket);
@@ -534,12 +578,22 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 }
             }
 
+#if MLN_RENDER_BACKEND_OPENGL
+            vertexAttrs->readDataDrivenPaintProperties<LineTrafficMarker, LineTrafficOrigin>(
+                paintPropertyBinders, evaluated, propertiesAsUniforms, idLineTrafficMarkerVertexAttribute);
+            vertexAttrs->readDataDrivenPaintProperties<LineTrafficLeftColor>(
+                paintPropertyBinders, evaluated, propertiesAsUniforms, idLineTrafficLeftColorVertexAttribute);
+#endif
             auto shader = lineShaderGroup->getOrCreateShader(context, propertiesAsUniforms, posNormalAttribName);
             if (!shader) {
                 continue;
             }
 
             auto builder = createLineBuilder("line", std::move(shader));
+#if MLN_RENDER_BACKEND_OPENGL
+            if (evaluated.get<LineTrafficMarker>().constantOr(1.f) != 0.f && paintParameters.staticData.trafficAtlas)
+                builder->setTexture(paintParameters.staticData.trafficAtlas, idLineTrafficAtlasTexture);
+#endif
 
             // vertices, attributes and segments
             addAttributes(*builder, bucket, std::move(vertexAttrs));

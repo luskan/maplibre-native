@@ -168,7 +168,7 @@ public:
             /* .gapwidth_t = */ .gapwidth_t = 0.f,
             /* .offset_t = */ .offset_t = 0.f,
             /* .width_t = */ .width_t = 0.f,
-            /* .pad1 = */ .pad1 = 0
+            .traffic_left_color_t = 0
         };
 
 #if MLN_UBO_CONSOLIDATION
@@ -839,13 +839,23 @@ gfx::ShaderPtr CustomDrawableLayerHost::Interface::lineShaderDefault() const {
     assert(shaderGroup);
     if (!shaderGroup) return gfx::ShaderPtr();
 
-    const StringIDSetsPair propertiesAsUniforms{{"a_color", "a_blur", "a_opacity", "a_gapwidth", "a_offset", "a_width"},
+    StringIDSetsPair propertiesAsUniforms{{"a_color", "a_blur", "a_opacity", "a_gapwidth", "a_offset", "a_width"},
                                                 {idLineColorVertexAttribute,
                                                  idLineBlurVertexAttribute,
                                                  idLineOpacityVertexAttribute,
                                                  idLineGapWidthVertexAttribute,
                                                  idLineOffsetVertexAttribute,
                                                  idLineWidthVertexAttribute}};
+#if MLN_RENDER_BACKEND_OPENGL
+    propertiesAsUniforms.first.emplace("a_traffic_left_color");
+    propertiesAsUniforms.second.emplace(idLineTrafficLeftColorVertexAttribute);
+    propertiesAsUniforms.first.emplace("a_traffic_marker");
+    propertiesAsUniforms.second.emplace(idLineTrafficMarkerVertexAttribute);
+    propertiesAsUniforms.first.emplace("a_path_distance");
+    propertiesAsUniforms.second.emplace(idLinePathDistanceVertexAttribute);
+    propertiesAsUniforms.first.emplace("a_traffic_origin");
+    propertiesAsUniforms.second.emplace(idLineTrafficOriginVertexAttribute);
+#endif
 
     return shaderGroup->getOrCreateShader(context, propertiesAsUniforms);
 }

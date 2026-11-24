@@ -22,10 +22,13 @@ struct alignas(16) LineDrawableUBO {
     /* 80 */ float gapwidth_t;
     /* 84 */ float offset_t;
     /* 88 */ float width_t;
-    /* 92 */ float pad1;
-    /* 96 */
+    /* 92 */ float traffic_left_color_t;
+    /* 96 */ float traffic_marker_t;
+    float traffic_origin_t;
+    float traffic_atlas_aspect;
+    float pad;
 };
-static_assert(sizeof(LineDrawableUBO) == 6 * 16);
+static_assert(sizeof(LineDrawableUBO) == 7 * 16);
 
 //
 // Line gradient
@@ -144,9 +147,12 @@ struct alignas(16) LineEvaluatedPropsUBO {
     /* 36 */ float floorwidth;
     /* 40 */ LineExpressionMask expressionMask;
     /* 44 */ float pad1;
-    /* 48 */
+    /* 48 */ Color traffic_left_color{0, 0, 0, 0};
+    /* 64 */ float traffic_marker = 0;
+    float traffic_origin = 0;
+    std::array<float, 2> padding = {};
 };
-static_assert(sizeof(LineEvaluatedPropsUBO) == 3 * 16);
+static_assert(sizeof(LineEvaluatedPropsUBO) == 5 * 16);
 
 #if MLN_UBO_CONSOLIDATION
 

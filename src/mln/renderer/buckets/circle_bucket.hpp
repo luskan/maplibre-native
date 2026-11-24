@@ -32,7 +32,11 @@ public:
 
     float getQueryRadius(const RenderLayer&) const override;
 
-    void update(const FeatureStates&, const GeometryTileLayer&, const std::string&, const ImagePositions&) override;
+    void update(const FeatureStates&,
+                const GeometryTileLayer&,
+                const std::string&,
+                const ImagePositions&,
+                FeatureStateUpdate) override;
 
     /*
      * @param {number} x vertex position

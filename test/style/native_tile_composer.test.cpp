@@ -127,6 +127,67 @@ TEST(NativeGeometryComposer, MatchesAllGeometryFamiliesPropertiesIDsAndQueries)
   parity(families());
 }
 
+TEST(NativeGeometryComposer, CrossingProfileRangesUseTheRetainedTilePath)
+{
+  const auto shape = line({{0, 0}, {30, 4}, {60, 0}, {88, 0}, {88, 60}});
+  FeatureCollection features;
+  features.emplace_back(shape);
+  features.emplace_back(shape);
+  features[0].id = uint64_t{1};
+  features[1].id = uint64_t{2};
+  features[0].properties["xr"] = int64_t{7};
+  features[1].properties["xr"] = int64_t{7};
+  features[0].properties["__automapa_mvt_crossing_profile_vertices"] = int64_t{2};
+  features[1].properties["__automapa_mvt_crossing_profile_vertices"] = -1 - ((int64_t{2} << 32) | int64_t{4});
+
+  const auto payload = compose(features);
+  NativeGeometryTileData data(payload);
+  const auto layer = data.getLayer("roads");
+  ASSERT_EQ(2u, layer->featureCount());
+  const auto first = layer->getFeature(0);
+  const auto second = layer->getFeature(1);
+  ASSERT_EQ(5u, first->getGeometries().front().size());
+  EXPECT_EQ(first->getGeometries(), second->getGeometries());
+  EXPECT_FALSE(first->getValue("__automapa_mvt_crossing_profile_vertices"));
+  EXPECT_FALSE(second->getValue("__automapa_mvt_crossing_profile_vertices"));
+  const auto firstRange = first->getValue("xt");
+  const auto secondRange = second->getValue("xt");
+  ASSERT_TRUE(firstRange && secondRange);
+  const auto seam = int64_t(std::lround(30.0 / 74.0 * 2047));
+  EXPECT_EQ(Value(seam), *firstRange);
+  EXPECT_EQ(Value(-1 - (seam * 2048 + 2047)), *secondRange);
+}
+
+TEST(NativeGeometryComposer, PreservesOrdinaryLinePropertiesOutsideTheProfileContract)
+{
+  FeatureCollection features;
+  features.emplace_back(line({{0, 0}, {50, 4}, {100, 0}}));
+  features.front().properties = {{"xv", int64_t{2}}, {"xt", "provider-value"},
+    {"__automapa_mvt_crossing_profile_vertices", int64_t{2}}};
+  const auto ordinary = features.front();
+  features.push_back(ordinary);
+  features.back().properties["xr"] = int64_t{7};
+  features.back().properties["__automapa_mvt_crossing_profile_vertices"] = 2.25;
+  parity(features);
+}
+
+TEST(NativeGeometryComposer, RetainsSelectedShortRoadsBetweenOrdinaryFeatures)
+{
+  FeatureCollection roads;
+  roads.emplace_back(line({{10, 10}, {30, 10}}));
+  roads.emplace_back(line({{12, 14}, {14, 14}}));
+  roads.emplace_back(line({{12, 15}, {14, 15}}));
+  roads.emplace_back(point(20, 20));
+  for (size_t i = 0; i < roads.size(); ++i) roads[i].id = uint64_t(i + 1);
+  roads[1].properties["__automapa_retain_short_line"] = true;
+  roads[2].properties["__automapa_retain_short_line"] = false;
+  parity(roads);
+  const auto payload = compose(roads);
+  ASSERT_EQ(3u, payload->features().size());
+  EXPECT_EQ(FeatureIdentifier(uint64_t{2}), payload->features()[1].id);
+  EXPECT_EQ(FeatureIdentifier(uint64_t{4}), payload->features()[2].id);
+}
+
 TEST(NativeGeometryComposer, StrictToleranceAndDuplicateVertices)
 {
   FeatureCollection features;

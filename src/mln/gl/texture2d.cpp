@@ -76,6 +76,7 @@ void Texture2D::allocateTexture() {
     // Create a new texture object
     auto obj = context.createUniqueTexture(size, pixelFormat, channelType);
     texture = std::make_unique<UniqueTexture>(std::move(obj));
+    mipmapsDirty = true;
 }
 
 void Texture2D::updateTextureData(const void* data) noexcept {
@@ -85,6 +86,8 @@ void Texture2D::updateTextureData(const void* data) noexcept {
     }
 
     storageDirty = false;
+    context.activeTextureUnit = 0;
+    context.texture[0] = getTextureID();
     updateSamplerConfiguration();
 }
 
@@ -103,9 +106,15 @@ void Texture2D::updateSamplerConfiguration() noexcept {
     using namespace platform;
     samplerStateDirty = false;
 
-    MBGL_CHECK_ERROR(glTexParameteri(GL_TEXTURE_2D,
-                                     GL_TEXTURE_MIN_FILTER,
-                                     samplerState.filter == gfx::TextureFilterType::Nearest ? GL_NEAREST : GL_LINEAR));
+    if (samplerState.mipmapped && mipmapsDirty) {
+        MBGL_CHECK_ERROR(glGenerateMipmap(GL_TEXTURE_2D));
+        mipmapsDirty = false;
+    }
+    const bool nearest = samplerState.filter == gfx::TextureFilterType::Nearest;
+    const auto minFilter = samplerState.mipmapped
+        ? (nearest ? GL_NEAREST_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR)
+        : (nearest ? GL_NEAREST : GL_LINEAR);
+    MBGL_CHECK_ERROR(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter));
     MBGL_CHECK_ERROR(glTexParameteri(GL_TEXTURE_2D,
                                      GL_TEXTURE_MAG_FILTER,
                                      samplerState.filter == gfx::TextureFilterType::Nearest ? GL_NEAREST : GL_LINEAR));
@@ -171,11 +180,6 @@ void Texture2D::uploadSubRegion(const void* pixelData, const Size& size_, uint16
 
     assert(texture);
 
-    // update sampler configuration if needed
-    if (samplerStateDirty) {
-        updateSamplerConfiguration();
-    }
-
     // Bind to TU 0 and upload
     context.activeTextureUnit = 0;
     context.texture[0] = getTextureID();
@@ -190,6 +194,8 @@ void Texture2D::uploadSubRegion(const void* pixelData, const Size& size_, uint16
                                      Enum<gfx::TextureChannelDataType>::to(channelType),
                                      pixelData));
 
+    mipmapsDirty = true;
+    samplerStateDirty = samplerStateDirty || samplerState.mipmapped;
     context.renderingStats().numTextureUpdates++;
     context.renderingStats().textureUpdateBytes += static_cast<size_t>(getPixelStride() * size_.width * size_.height);
 }

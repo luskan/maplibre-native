@@ -51,7 +51,11 @@ public:
 
     float getQueryRadius(const RenderLayer&) const override;
 
-    void update(const FeatureStates&, const GeometryTileLayer&, const std::string&, const ImagePositions&) override;
+    void update(const FeatureStates&,
+                const GeometryTileLayer&,
+                const std::string&,
+                const ImagePositions&,
+                FeatureStateUpdate) override;
 
     static FillLayoutVertex layoutVertex(Point<int16_t> p) { return FillLayoutVertex{{{p.x, p.y}}}; }
 

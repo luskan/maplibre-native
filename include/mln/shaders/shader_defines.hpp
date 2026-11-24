@@ -135,6 +135,9 @@ enum {
 enum {
     idLineEvaluatedPropsUBO = getEnumValue(lineLayerSSBOCount, layerUBOStartId),
     idLineExpressionUBO,
+#if MLN_RENDER_BACKEND_OPENGL
+    idLineTrafficPaintUBO,
+#endif
     lineLayerUBOCount
 };
 
@@ -362,6 +365,7 @@ enum {
 
 enum {
     idLineImageTexture,
+    idLineTrafficAtlasTexture,
     lineTextureCount
 };
 
@@ -519,6 +523,11 @@ enum {
     idLineRoadCasingColorVertexAttribute,
     idLineRoadFillWidthVertexAttribute,
     idLineRoadLengthVertexAttribute,
+    idLineTrafficLeftColorVertexAttribute,
+    idLineRoadProfileRangeVertexAttribute,
+    idLineTrafficMarkerVertexAttribute,
+    idLineTrafficOriginVertexAttribute,
+    idLinePathDistanceVertexAttribute,
 
     lineVertexAttributeCount
 };

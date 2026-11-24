@@ -12,13 +12,19 @@
 #include <mln/renderer/cross_faded_property_evaluator.hpp>
 #include <mln/renderer/paint_property_statistics.hpp>
 #include <mln/renderer/possibly_evaluated_property_value.hpp>
+#include <mln/renderer/source_state.hpp>
+#include <mln/style/expression/is_constant.hpp>
+#include <mln/tile/tile_id.hpp>
 #include <mln/util/indexed_tuple.hpp>
 #include <mln/util/literal.hpp>
 #include <mln/util/type_list.hpp>
 #include <mln/util/variant.hpp>
 #include <mln/util/vectors.hpp>
 
+#include <cstring>
+#include <string_view>
 #include <type_traits>
+#include <unordered_set>
 
 namespace mln {
 
@@ -38,6 +44,81 @@ struct FeatureVertexRange {
 
 using FeatureVertexRangeMap = std::map<std::string, std::vector<FeatureVertexRange>>;
 
+class FeaturePaintRanges {
+public:
+    void add(std::string id,
+             FeatureVertexRange range,
+             const CanonicalTileID& canonical_,
+             const style::expression::Value& formattedSection) {
+        canonical = canonical_;
+        using Section = std::unordered_map<std::string, style::expression::Value>;
+        if (formattedSection.is<Section>() && !formattedSection.get<Section>().empty()) {
+            if (!formattedSections) formattedSections = std::make_unique<FormattedSections>();
+            formattedSections->emplace(range.start, formattedSection);
+        }
+        ranges[std::move(id)].push_back(range);
+    }
+
+    style::expression::EvaluationContext context(const GeometryTileFeature& feature,
+                                                 const FeatureState& state,
+                                                 std::size_t start) const {
+        auto result = style::expression::EvaluationContext(&feature).withFeatureState(&state).withCanonicalTileID(&canonical);
+        if (formattedSections) {
+            const auto section = formattedSections->find(start);
+            if (section != formattedSections->end()) result.withFormattedSection(&section->second);
+        }
+        return result;
+    }
+
+    template <class Apply>
+    void update(const FeatureStates& states, FeatureStateUpdate update, const Apply& apply) {
+        if (ranges.empty()) return;
+
+        if (update == FeatureStateUpdate::Snapshot && applied) {
+            std::erase_if(*applied, [&](const auto* entry) {
+                if (states.contains(entry->first)) return false;
+                apply(entry->second, FeatureState{});
+                return true;
+            });
+        }
+        const auto applyState = [&](const FeatureVertexRangeMap::value_type& entry, const FeatureState& state) {
+            apply(entry.second, state);
+            if (!state.empty()) {
+                if (!applied) applied = std::make_unique<Applied>();
+                applied->insert(&entry);
+            } else if (applied) {
+                applied->erase(&entry);
+            }
+        };
+        if (ranges.size() < states.size()) {
+            for (const auto& entry : ranges) {
+                const auto state = states.find(entry.first);
+                if (state != states.end()) applyState(entry, state->second);
+            }
+        } else {
+            for (const auto& [id, state] : states) {
+                const auto entry = ranges.find(id);
+                if (entry != ranges.end()) applyState(*entry, state);
+            }
+        }
+        if (applied && applied->empty()) applied.reset();
+    }
+
+private:
+    using Applied = std::unordered_set<const FeatureVertexRangeMap::value_type*>;
+    using FormattedSections = std::unordered_map<std::size_t, style::expression::Value>;
+    CanonicalTileID canonical{0, 0, 0};
+    FeatureVertexRangeMap ranges;
+    std::unique_ptr<FormattedSections> formattedSections;
+    // Only remember matching IDs. The map owns entries for the life of the binder.
+    std::unique_ptr<Applied> applied;
+};
+
+inline bool dependsOnFeatureState(const style::PropertyExpressionBase& expression) {
+    constexpr std::array<std::string_view, 1> operations{"feature-state"};
+    return !style::expression::isGlobalPropertyConstant(expression.getExpression(), operations);
+}
+
 struct InterleavedVertexBuffer {
     std::size_t stride = 0;
     std::size_t vertexCount = 0;
@@ -55,6 +136,12 @@ struct InterleavedVertexBuffer {
     const T& get(std::size_t index, std::size_t offset) {
         assert(stride * index + offset + sizeof(T) <= sharedVertexVector->bytes());
         return *reinterpret_cast<const T*>(sharedVertexVector->data() + stride * index + offset);
+    }
+
+    template <typename T>
+    bool matches(std::size_t index, std::size_t offset, const T& value) {
+        const auto& current = get<T>(index, offset).a1;
+        return std::memcmp(current.data(), value.a1.data(), current.size() * sizeof(current[0])) == 0;
     }
 
     template <typename T>
@@ -162,9 +249,10 @@ public:
                                       const CanonicalTileID& canonical,
                                       const style::expression::Value&) = 0;
 
-    virtual void updateVertexVectors(const FeatureStates&, const GeometryTileLayer&, const ImagePositions&) {}
+    virtual void updateVertexVectors(
+        const FeatureStates&, const GeometryTileLayer&, const ImagePositions&, FeatureStateUpdate, gfx::VertexUpdateRange&) {}
 
-    virtual void updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) = 0;
+    virtual bool updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) = 0;
 
     virtual void setPatternParameters(const std::optional<ImagePosition>&,
                                       const std::optional<ImagePosition>&,
@@ -222,7 +310,9 @@ public:
                               const std::optional<PatternDependency>&,
                               const CanonicalTileID&,
                               const style::expression::Value&) override {}
-    void updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) override {}
+    bool updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) override {
+        return false;
+    }
 
     void setPatternParameters(const std::optional<ImagePosition>&,
                               const std::optional<ImagePosition>&,
@@ -261,7 +351,9 @@ public:
                               const std::optional<PatternDependency>&,
                               const CanonicalTileID&,
                               const style::expression::Value&) override {}
-    void updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) override {}
+    bool updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) override {
+        return false;
+    }
 
     void setPatternParameters(const std::optional<ImagePosition>& posA,
                               const std::optional<ImagePosition>& posB,
@@ -308,7 +400,8 @@ public:
 
     SourceFunctionPaintPropertyBinder(style::PropertyExpression<T> expression_, T defaultValue_, bool memoizeColor = false)
         : expression(std::move(expression_)),
-          defaultValue(std::move(defaultValue_)) {
+          defaultValue(std::move(defaultValue_)),
+          usesFeatureState(dependsOnFeatureState(expression)) {
         if constexpr (std::is_same_v<T, Color>) {
             this->trackColor = memoizeColor && colormemo::current();
             if (this->trackColor) this->colorMemo = colormemo::Cache::create(expression, defaultValue);
@@ -346,45 +439,53 @@ public:
         for (std::size_t i = elements; i < length; ++i) {
             this->interleavedVertexBuffer->set(i, this->vertexOffset, BaseVertex{value});
         }
-        std::optional<std::string> idStr = featureIDtoString(feature.getID());
-        if (idStr) {
-            featureMap[*idStr].emplace_back(FeatureVertexRange{index, elements, length});
+        if (usesFeatureState && elements < length) {
+            if (auto idStr = featureIDtoString(feature.getID())) {
+                featureMap.add(std::move(*idStr), {index, elements, length}, canonical, formattedSection);
+            }
         }
     }
 
     void updateVertexVectors(const FeatureStates& states,
                              const GeometryTileLayer& layer,
-                             const ImagePositions&) override {
-        for (const auto& it : states) {
-            const auto positions = featureMap.find(it.first);
-            if (positions == featureMap.end()) {
-                continue;
-            }
-
-            for (const auto& pos : positions->second) {
+                             const ImagePositions&,
+                             FeatureStateUpdate update,
+                             gfx::VertexUpdateRange& modified) override {
+        featureMap.update(states, update, [&](const auto& positions, const FeatureState& state) {
+            for (const auto& pos : positions) {
                 std::unique_ptr<GeometryTileFeature> feature = layer.getFeature(pos.featureIndex);
-                if (feature) {
-                    updateVertexVector(pos.start, pos.end, *feature, it.second);
+                if (feature && updateVertexVector(pos.start, pos.end, featureMap.context(*feature, state, pos.start))) {
+                    modified.include(pos.start, pos.end);
                 }
             }
-        }
+        });
     }
 
-    void updateVertexVector(std::size_t start,
+    bool updateVertexVector(std::size_t start,
                             std::size_t end,
                             const GeometryTileFeature& feature,
                             const FeatureState& state) override {
-        using style::expression::EvaluationContext;
+        return updateVertexVector(start, end, style::expression::EvaluationContext(&feature).withFeatureState(&state));
+    }
 
-        const auto evaluated = expression.evaluate(EvaluationContext(&feature).withFeatureState(&state), defaultValue);
+private:
+    bool updateVertexVector(std::size_t start,
+                            std::size_t end,
+                            const style::expression::EvaluationContext& context) {
+        const auto evaluated = expression.evaluate(context, defaultValue);
         this->statistics.add(evaluated);
 
         const auto value = BaseVertex{attributeValue(evaluated)};
+        if (start == end || this->interleavedVertexBuffer->matches(start, this->vertexOffset, value)) {
+            return false;
+        }
         for (std::size_t i = start; i < end; ++i) {
             this->interleavedVertexBuffer->set(i, this->vertexOffset, value);
         }
+        return true;
     }
 
+public:
     std::tuple<float> interpolationFactor(float) const override { return std::tuple<float>{0.0f}; }
 
     std::tuple<T> uniformValue(const PossiblyEvaluatedPropertyValue<T>& currentValue) const override {
@@ -409,7 +510,8 @@ public:
 private:
     style::PropertyExpression<T> expression;
     T defaultValue;
-    FeatureVertexRangeMap featureMap;
+    bool usesFeatureState;
+    FeaturePaintRanges featureMap;
 };
 
 template <class T, class A>
@@ -428,6 +530,7 @@ public:
         : expression(std::move(expression_)),
           defaultValue(std::move(defaultValue_)),
           zoomRange(useCoveringStops ? expression.getCoveringStops(zoom, zoom + 1) : Range<float>{zoom, zoom + 1}),
+          usesFeatureState(dependsOnFeatureState(expression)),
           memoizeWidth(memoizeWidth_) {
         if constexpr (std::is_same_v<T, float>) {
             if (memoizeWidth) widthMemo = paintmemo::Cache::create(expression, zoomRange, defaultValue);
@@ -475,49 +578,58 @@ public:
         for (std::size_t i = elements; i < length; ++i) {
             this->interleavedVertexBuffer->set(i, this->vertexOffset, Vertex{value});
         }
-        if (auto idStr = featureIDtoString(feature.getID())) {
-            featureMap[*idStr].emplace_back(FeatureVertexRange{index, elements, length});
+        if (usesFeatureState && elements < length) {
+            if (auto idStr = featureIDtoString(feature.getID())) {
+                featureMap.add(std::move(*idStr), {index, elements, length}, canonical, formattedSection);
+            }
         }
     }
 
     void updateVertexVectors(const FeatureStates& states,
                              const GeometryTileLayer& layer,
-                             const ImagePositions&) override {
-        for (const auto& it : states) {
-            const auto positions = featureMap.find(it.first);
-            if (positions == featureMap.end()) {
-                continue;
-            }
-
-            for (const auto& pos : positions->second) {
+                             const ImagePositions&,
+                             FeatureStateUpdate update,
+                             gfx::VertexUpdateRange& modified) override {
+        featureMap.update(states, update, [&](const auto& positions, const FeatureState& state) {
+            for (const auto& pos : positions) {
                 std::unique_ptr<GeometryTileFeature> feature = layer.getFeature(pos.featureIndex);
-                if (feature) {
-                    updateVertexVector(pos.start, pos.end, *feature, it.second);
+                if (feature && updateVertexVector(pos.start, pos.end, featureMap.context(*feature, state, pos.start))) {
+                    modified.include(pos.start, pos.end);
                 }
             }
-        }
+        });
     }
 
-    void updateVertexVector(std::size_t start,
+    bool updateVertexVector(std::size_t start,
                             std::size_t end,
                             const GeometryTileFeature& feature,
                             const FeatureState& state) override {
-        using style::expression::EvaluationContext;
-        const Range<T> range = {
-            expression.evaluate(EvaluationContext(zoomRange.min, &feature, &state), defaultValue),
-            expression.evaluate(EvaluationContext(zoomRange.max, &feature, &state), defaultValue),
-        };
+        return updateVertexVector(start, end, style::expression::EvaluationContext(&feature).withFeatureState(&state));
+    }
+
+private:
+    bool updateVertexVector(std::size_t start, std::size_t end, style::expression::EvaluationContext context) {
+        context.zoom = zoomRange.min;
+        const auto min = expression.evaluate(context, defaultValue);
+        context.zoom = zoomRange.max;
+        const auto max = expression.evaluate(context, defaultValue);
+        const Range<T> range{min, max};
         this->statistics.add(range.min);
         this->statistics.add(range.max);
 
         const Vertex value = Vertex{
             zoomInterpolatedAttributeValue(attributeValue(range.min), attributeValue(range.max))};
 
+        if (start == end || this->interleavedVertexBuffer->matches(start, this->vertexOffset, value)) {
+            return false;
+        }
         for (std::size_t i = start; i < end; ++i) {
             this->interleavedVertexBuffer->set(i, this->vertexOffset, value);
         }
+        return true;
     }
 
+public:
     std::tuple<float> interpolationFactor(float currentZoom) const override {
         const float possiblyRoundedZoom = expression.getUseIntegerZoom() ? std::floor(currentZoom) : currentZoom;
 
@@ -549,7 +661,8 @@ private:
     style::PropertyExpression<T> expression;
     T defaultValue;
     Range<float> zoomRange;
-    FeatureVertexRangeMap featureMap;
+    bool usesFeatureState;
+    FeaturePaintRanges featureMap;
     bool memoizeWidth = false;
     std::unique_ptr<paintmemo::Cache> widthMemo;
 };
@@ -618,7 +731,9 @@ public:
         }
     }
 
-    void updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) override {}
+    bool updateVertexVector(std::size_t, std::size_t, const GeometryTileFeature&, const FeatureState&) override {
+        return false;
+    }
 
     std::tuple<float, float> interpolationFactor(float) const override { return std::tuple<float, float>{0.0f, 0.0f}; }
 
@@ -811,12 +926,16 @@ public:
         interleavedVertexBuffer.sharedVertexVector->updateModified(true);
     }
 
-    void updateVertexVectors(const FeatureStates& states,
+    bool updateVertexVectors(const FeatureStates& states,
                              const GeometryTileLayer& layer,
-                             const ImagePositions& imagePositions) {
-        util::ignore({(binders.template get<Ps>()->updateVertexVectors(states, layer, imagePositions), 0)...});
-        // set() writes straight into the buffer memory and does not mark it dirty, so force here.
-        interleavedVertexBuffer.sharedVertexVector->updateModified(true);
+                             const ImagePositions& imagePositions,
+                             FeatureStateUpdate update) {
+        gfx::VertexUpdateRange modified;
+        (binders.template get<Ps>()->updateVertexVectors(states, layer, imagePositions, update, modified), ...);
+        if (modified.empty()) return false;
+        const auto stride = interleavedVertexBuffer.stride;
+        interleavedVertexBuffer.sharedVertexVector->updateModifiedRange(modified.begin * stride, modified.end * stride);
+        return true;
     }
 
     void setPatternParameters(const std::optional<ImagePosition>& posA,

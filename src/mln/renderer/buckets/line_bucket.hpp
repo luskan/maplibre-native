@@ -42,7 +42,11 @@ public:
 
     float getQueryRadius(const RenderLayer&) const override;
 
-    void update(const FeatureStates&, const GeometryTileLayer&, const std::string&, const ImagePositions&) override;
+    void update(const FeatureStates&,
+                const GeometryTileLayer&,
+                const std::string&,
+                const ImagePositions&,
+                FeatureStateUpdate) override;
 
     /*
      * @param p vertex position
@@ -89,6 +93,7 @@ public:
     using VertexVector = gfx::VertexVector<LineLayoutVertex>;
     const std::shared_ptr<VertexVector> sharedVertices = std::make_shared<VertexVector>();
     VertexVector& vertices = *sharedVertices;
+    std::shared_ptr<gfx::VertexVector<float>> pathDistances;
 
     using TriangleIndexVector = gfx::IndexVector<gfx::Triangles>;
     const std::shared_ptr<TriangleIndexVector> sharedTriangles = std::make_shared<TriangleIndexVector>();

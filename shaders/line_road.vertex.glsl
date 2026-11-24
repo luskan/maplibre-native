@@ -8,6 +8,11 @@
 
 layout (location = 0) in vec2 a_pos_normal;
 layout (location = 1) in vec4 a_data;
+#ifndef HAS_UNIFORM_u_path_distance
+layout (location = 2) in highp float a_path_distance;
+#else
+const highp float a_path_distance = 0.0;
+#endif
 
 layout (std140) uniform GlobalPaintParamsUBO {
     highp vec2 u_pattern_atlas_texsize;
@@ -21,6 +26,15 @@ layout (std140) uniform GlobalPaintParamsUBO {
     lowp float global_pad1;
 };
 
+#ifndef HAS_UNIFORM_u_path_distance
+layout (std140) uniform LineTrafficPaintUBO {
+    highp vec4 u_traffic_widths[5];
+    highp vec4 u_traffic_scales;
+    highp vec4 u_traffic_outline;
+    highp vec4 u_traffic_insets;
+};
+#endif
+
 layout (std140) uniform LineDrawableUBO {
     highp mat4 u_matrix;
     mediump float u_ratio;
@@ -31,7 +45,11 @@ layout (std140) uniform LineDrawableUBO {
     lowp float u_gapwidth_t;
     lowp float u_offset_t;
     lowp float u_width_t;
-    lowp float drawable_pad1;
+    lowp float u_traffic_left_color_t;
+    lowp float u_traffic_marker_t;
+    lowp float u_traffic_origin_t;
+    highp float u_traffic_atlas_aspect;
+    lowp float traffic_pad;
 };
 
 layout (std140) uniform LineEvaluatedPropsUBO {
@@ -44,6 +62,9 @@ layout (std140) uniform LineEvaluatedPropsUBO {
     lowp float u_floorwidth;
     lowp float props_pad1;
     lowp float props_pad2;
+    highp vec4 u_traffic_left_color;
+    highp float u_traffic_marker;
+    highp float u_traffic_origin;
 };
 
 layout (std140) uniform LineRoadPropsUBO {
@@ -56,7 +77,7 @@ layout (std140) uniform LineRoadPropsUBO {
     highp float u_road_max_guard_distance;
     highp float u_road_length;
     highp float u_road_length_t;
-    highp float road_pad3;
+    highp float u_road_profile_range;
 };
 out highp vec2 v_road_tile_pos;
 out highp float v_road_ratio;
@@ -64,6 +85,7 @@ out vec2 v_normal;
 out vec2 v_width2;
 out float v_gamma_scale;
 out highp float v_linesofar;
+flat out highp vec3 v_road_profile_interval;
 
 #pragma mapbox: define highp vec4 color
 #pragma mapbox: define lowp float blur
@@ -74,17 +96,38 @@ out highp float v_linesofar;
 #pragma mapbox: define highp vec4 road_casing_color
 #pragma mapbox: define highp float road_fill_width
 #pragma mapbox: define highp float road_length
+#pragma mapbox: define highp vec4 traffic_left_color
+#pragma mapbox: define highp float road_profile_range
+
+// Packed ranges are copied verbatim from the feature at both zoom stops.
+#define u_road_profile_range_t 0.0
+
+#pragma mapbox: define highp float traffic_marker
+#pragma mapbox: define highp float traffic_origin
+flat out highp float v_marker_column;
+flat out highp vec4 v_traffic_outline;
+flat out highp vec4 v_traffic_edges;
+out highp float v_marker_phase;
 
 void main() {
+    #pragma mapbox: initialize highp float traffic_marker
+    #pragma mapbox: initialize highp float traffic_origin
     #pragma mapbox: initialize highp vec4 road_casing_color
     #pragma mapbox: initialize highp float road_fill_width
     #pragma mapbox: initialize highp float road_length
+    #pragma mapbox: initialize highp vec4 traffic_left_color
+    #pragma mapbox: initialize highp float road_profile_range
     #pragma mapbox: initialize highp vec4 color
     #pragma mapbox: initialize lowp float blur
     #pragma mapbox: initialize lowp float opacity
     #pragma mapbox: initialize mediump float gapwidth
     #pragma mapbox: initialize lowp float offset
     #pragma mapbox: initialize mediump float width
+
+    bool reverse_side = road_profile_range < 0.0;
+    highp float packed_range = reverse_side ? -1.0 - road_profile_range : road_profile_range;
+    v_road_profile_interval = vec3(floor(packed_range / 2048.0),
+        mod(packed_range, 2048.0), reverse_side ? -1.0 : 1.0);
 
 
 
@@ -107,6 +150,25 @@ void main() {
 
 
     gapwidth = gapwidth / 2.0;
+#ifndef HAS_UNIFORM_u_path_distance
+    int code = int(abs(traffic_marker) + 0.5);
+    int slot = max(code - 1, 0) % 8;
+    int category = clamp((max(code - 1, 0) / 16), 0, 19);
+    bool speedProfile = code > 0 && u_traffic_scales.z > 0.0;
+    highp float pathDistance = a_path_distance < 0.0 ? -1.0 - a_path_distance : a_path_distance;
+    if (speedProfile && a_path_distance < 0.0) v_normal.x = -normal.x;
+    if (speedProfile) {
+        width = traffic_marker > 0.0 ? u_traffic_widths[category / 4][category % 4]
+            * (slot >= 4 ? u_traffic_scales.y : u_traffic_scales.x) : 0.0;
+    }
+    bool split = ((max(code - 1, 0) / 8) % 2) != 0;
+    v_traffic_edges = vec4(speedProfile ? 1.0 : 0.0,
+        split ? u_traffic_insets.y : u_traffic_insets.x, split ? u_traffic_insets.z : -1.0, u_traffic_insets.w);
+    v_traffic_outline = u_traffic_outline;
+#else
+    v_traffic_edges = vec4(0.0);
+    v_traffic_outline = vec4(0.0);
+#endif
     float halfwidth = width / 2.0;
     offset = -1.0 * offset;
 
@@ -133,6 +195,15 @@ void main() {
     float extrude_length_with_perspective = length(projected_extrude.xy / gl_Position.w * u_units_to_pixels);
     v_gamma_scale = extrude_length_without_perspective / extrude_length_with_perspective;
 
+#if !defined(HAS_UNIFORM_u_path_distance) && !defined(HAS_UNIFORM_u_no_traffic_atlas)
+    v_marker_column = u_traffic_atlas_aspect > 0.0 && traffic_marker > 0.0 ? float(slot + 1) : 0.0;
+    highp float width_for_marker = max(speedProfile ? width : road_fill_width, 0.01);
+    highp float period = max(width_for_marker * u_traffic_atlas_aspect, 0.01);
+    v_marker_phase = (traffic_origin + pathDistance * v_road_profile_interval.z) * u_ratio / period;
+#else
+    v_marker_column = 0.0;
+    v_marker_phase = 0.0;
+#endif
     v_width2 = vec2(outset, inset);
     v_road_tile_pos = pos + (offset2 + dist) / u_ratio;
     v_road_ratio = u_ratio;

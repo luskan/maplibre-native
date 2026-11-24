@@ -43,8 +43,15 @@ std::unique_ptr<gfx::VertexBufferResource> UploadPass::createVertexBufferResourc
 }
 
 void UploadPass::updateVertexBufferResource(gfx::VertexBufferResource& resource, const void* data, std::size_t size) {
+    updateVertexBufferRange(resource, data, 0, size);
+}
+
+void UploadPass::updateVertexBufferRange(gfx::VertexBufferResource& resource,
+                                         const void* data,
+                                         std::size_t offset,
+                                         std::size_t size) {
     commandEncoder.context.vertexBuffer = static_cast<gl::VertexBufferResource&>(resource).getBuffer();
-    MBGL_CHECK_ERROR(glBufferSubData(GL_ARRAY_BUFFER, 0, size, data));
+    MBGL_CHECK_ERROR(glBufferSubData(GL_ARRAY_BUFFER, offset, size, data));
 
     commandEncoder.context.renderingStats().vertexUpdateBytes += size;
     commandEncoder.context.renderingStats().bufferUpdateBytes += size;
@@ -106,8 +113,15 @@ const gfx::UniqueVertexBufferResource& UploadPass::getBuffer(const gfx::VertexVe
             if (rawBufSize <= resource.getByteSize()) {
                 // If the source changed, update the buffer contents
                 if (vec->isModifiedAfter(resource.getLastUpdated())) {
-                    updateVertexBufferResource(resource, rawBufPtr, rawBufSize);
+                    const auto bytes = vec->getModifiedBytes();
+                    if (bytes.begin < bytes.end && rawBufSize > 0 && bytes.end <= static_cast<std::size_t>(rawBufSize)) {
+                        const auto* data = static_cast<const uint8_t*>(rawBufPtr) + bytes.begin;
+                        updateVertexBufferRange(resource, data, bytes.begin, bytes.end - bytes.begin);
+                    } else {
+                        updateVertexBufferResource(resource, rawBufPtr, rawBufSize);
+                    }
                     resource.setLastUpdated(vec->getLastModified());
+                    vec->recordBufferUpdate();
                 }
                 return rawData->resource;
             }
@@ -147,7 +161,8 @@ gfx::AttributeBindingArray UploadPass::buildAttributeBindings(
     /*out*/ std::vector<std::unique_ptr<gfx::VertexBufferResource>>& outBuffers) {
     MLN_TRACE_FUNC();
     AttributeBindingArray bindings;
-    bindings.resize(defaults.allocatedSize());
+    // Attribute IDs cover multiple shader variants. Only active GL locations belong in a VAO.
+    bindings.reserve(defaults.allocatedSize());
 
     constexpr std::size_t align = 16;
     constexpr std::uint8_t padding = 0;

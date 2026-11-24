@@ -3,6 +3,7 @@
 #include <mln/geometry/line_atlas.hpp>
 #include <mln/gfx/backend_scope.hpp>
 #include <mln/gfx/context.hpp>
+#include <mln/gfx/texture2d.hpp>
 #include <mln/gfx/cull_face_mode.hpp>
 #include <mln/gfx/render_pass.hpp>
 #include <mln/gfx/renderer_backend.hpp>
@@ -180,6 +181,24 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
     }
 
     const auto& renderTreeParameters = renderTree.getParameters();
+#if MLN_RENDER_BACKEND_OPENGL
+    staticData->trafficPaint = trafficPaint;
+    if (staticData->trafficPaintBuffer) staticData->trafficPaintBuffer->update(&trafficPaint, sizeof(trafficPaint));
+    if (std::exchange(trafficAtlasChanged, false)) {
+        staticData->trafficAtlas.reset();
+        staticData->trafficAtlasAspect = 0;
+        if (trafficAtlas && trafficAtlas->valid() && trafficAtlas->size.width % 8 == 0) {
+            auto texture = context.createTexture2D();
+            texture->setImage(trafficAtlas);
+            texture->setSamplerConfiguration({.filter = gfx::TextureFilterType::Linear,
+                                              .wrapU = gfx::TextureWrapType::Clamp,
+                                              .wrapV = gfx::TextureWrapType::Repeat,
+                                              .mipmapped = trafficAtlasMipmapped});
+            staticData->trafficAtlas = std::move(texture);
+            staticData->trafficAtlasAspect = 8.0f * trafficAtlas->size.height / trafficAtlas->size.width;
+        }
+    }
+#endif
     staticData->has3D = renderTreeParameters.has3D;
     const Size renderableSize = backend.getDefaultRenderable().getSize();
 

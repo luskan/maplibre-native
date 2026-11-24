@@ -143,7 +143,9 @@ public:
     // placement and will have time to finish by the second placement.
     virtual void performedFadePlacement() {}
 
-    virtual void setFeatureState(const LayerFeatureStates&) {}
+    virtual void setFeatureState(const LayerFeatureStates&, FeatureStateUpdate) {}
+    // New buckets start at zero and receive a full source state.
+    uint64_t featureStateVersion = 0;
 
     void dumpDebugLogs() const;
 

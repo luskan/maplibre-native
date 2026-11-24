@@ -123,12 +123,15 @@ bool SymbolBucket::hasData() const {
 void SymbolBucket::update(const FeatureStates& states,
                           const GeometryTileLayer& layer,
                           const std::string& layerID,
-                          const ImagePositions& imagePositions) {
+                          const ImagePositions& imagePositions,
+                          FeatureStateUpdate update) {
     auto it = paintProperties.find(layerID);
     if (it != paintProperties.end()) {
-        it->second.iconBinders.updateVertexVectors(states, layer, imagePositions);
-        it->second.textBinders.updateVertexVectors(states, layer, imagePositions);
-        uploaded = false;
+        const bool iconsChanged = it->second.iconBinders.updateVertexVectors(states, layer, imagePositions, update);
+        const bool textChanged = it->second.textBinders.updateVertexVectors(states, layer, imagePositions, update);
+        if (iconsChanged || textChanged) {
+            uploaded = false;
+        }
     }
 }
 

@@ -98,6 +98,22 @@ struct LineRoadLength : DataDrivenPaintProperty<float, attributes::road_length, 
     static float defaultValue() { return 0.f; }
 };
 
+struct LineRoadProfileRange : DataDrivenPaintProperty<float, attributes::road_profile_range, uniforms::road_profile_range> {
+    static float defaultValue() { return 2047.f; }
+};
+
+struct LineTrafficLeftColor : DataDrivenPaintProperty<Color, attributes::traffic_left_color, uniforms::traffic_left_color> {
+    static Color defaultValue() { return {}; }
+};
+
+struct LineTrafficMarker : DataDrivenPaintProperty<float, attributes::traffic_marker, uniforms::traffic_marker> {
+    static float defaultValue() { return 0.f; }
+};
+
+struct LineTrafficOrigin : DataDrivenPaintProperty<float, attributes::traffic_origin, uniforms::traffic_origin> {
+    static float defaultValue() { return 0.f; }
+};
+
 struct LineTranslate : PaintProperty<std::array<float, 2>> {
     static std::array<float, 2> defaultValue() { return {{0.f, 0.f}}; }
 };
@@ -133,6 +149,10 @@ class LinePaintProperties : public Properties<
     LineRoadFillWidth,
     LineRoadGuardWidth,
     LineRoadLength,
+    LineRoadProfileRange,
+    LineTrafficLeftColor,
+    LineTrafficMarker,
+    LineTrafficOrigin,
     LineTranslate,
     LineTranslateAnchor,
     LineWidth

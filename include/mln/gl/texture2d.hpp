@@ -76,6 +76,7 @@ private:
     std::shared_ptr<PremultipliedImage> image{nullptr};
     Size size{0, 0};
     bool samplerStateDirty{false};
+    bool mipmapsDirty{true};
     bool storageDirty{false};
 
     int32_t boundTextureUnit{-1};

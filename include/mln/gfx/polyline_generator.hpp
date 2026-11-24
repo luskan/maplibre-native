@@ -42,6 +42,8 @@ struct PolylineGeneratorOptions {
     float roundLimit{1.f};
     uint32_t overscaling{1};
     std::optional<PolylineGeneratorDistances> clipDistances;
+    // Optional path distance in tile units, independent of the packed line vertex counter.
+    gfx::VertexVector<float>* pathDistances = nullptr;
 };
 
 template <class PolylineLayoutVertex, class PolylineSegment>
@@ -77,7 +79,8 @@ private:
                           bool round,
                           std::size_t startVertex,
                           std::vector<TriangleElement>& triangleStore,
-                          std::optional<PolylineGeneratorDistances> lineDistances);
+                          std::optional<PolylineGeneratorDistances> lineDistances,
+                          bool endCapVertex = false);
     void addPieSliceVertex(const GeometryCoordinate& currentVertex,
                            double distance,
                            const Point<double>& extrude,
@@ -87,6 +90,8 @@ private:
                            std::optional<PolylineGeneratorDistances> lineDistances);
 
 private:
+    gfx::VertexVector<float>* pathDistances = nullptr;
+    double distanceBase = 0;
     Vertices& vertices;
     LayoutVertexFunc layoutVertex;
     Segments& segments;

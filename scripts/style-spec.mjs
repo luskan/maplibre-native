@@ -15,6 +15,18 @@ modifiedReferenceSpec.paint_line['line-road-casing-color'] = {
   ...referenceSpec.paint_line['line-color'], default: 'rgba(0,0,0,0)',
   doc: 'Outer color of the composite road profile.'
 };
+modifiedReferenceSpec.paint_line['line-traffic-left-color'] = {
+  ...referenceSpec.paint_line['line-color'], default: 'rgba(0,0,0,0)',
+  doc: 'Left-side color of a solid OpenGL line. Transparency selects line-color.'
+};
+modifiedReferenceSpec.paint_line['line-traffic-marker'] = {
+  ...referenceSpec.paint_line['line-width'], default: 0, minimum: -320, maximum: 320,
+  doc: 'OpenGL traffic profile. Zero uses ordinary paint. Positive codes pack category, split, lane and direction. Negative codes suppress the underlying casing.'
+};
+modifiedReferenceSpec.paint_line['line-traffic-origin'] = {
+  ...referenceSpec.paint_line['line-width'], default: 0, minimum: -1000000000,
+  doc: 'Distance from the road origin to the start of this clipped line in canonical tile units.'
+};
 modifiedReferenceSpec.paint_line['line-road-guard-width'] = {
   ...referenceSpec.paint_line['line-width'], default: 0, 'property-type': 'data-constant',
   expression: { interpolated: true, parameters: ['zoom'] },
@@ -23,6 +35,11 @@ modifiedReferenceSpec.paint_line['line-road-guard-width'] = {
 modifiedReferenceSpec.paint_line['line-road-length'] = {
   ...referenceSpec.paint_line['line-width'], default: 0,
   doc: 'Packed tile-unit length of a local faded road profile.'
+};
+modifiedReferenceSpec.paint_line['line-road-profile-range'] = {
+  ...referenceSpec.paint_line['line-width'], default: 2047, minimum: -4194304, maximum: 4194303,
+  expression: { interpolated: false, parameters: ['feature'] },
+  doc: 'Range of a local road profile as two 11-bit normalized positions. A negative value also reverses the traffic sides.'
 };
 
 // https://github.com/maplibre/maplibre-native/issues/250

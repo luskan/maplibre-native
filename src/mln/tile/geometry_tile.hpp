@@ -107,7 +107,7 @@ public:
     void performedFadePlacement() override;
     std::shared_ptr<FeatureIndex> getFeatureIndex() const;
 
-    void setFeatureState(const LayerFeatureStates&) override;
+    void setFeatureState(const LayerFeatureStates&, FeatureStateUpdate) override;
 
 protected:
     virtual bool acceptsPendingDataResult() const { return true; }

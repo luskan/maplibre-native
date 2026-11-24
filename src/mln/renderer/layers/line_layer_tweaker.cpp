@@ -1,3 +1,4 @@
+#include <mln/renderer/render_static_data.hpp>
 #include <mln/renderer/layers/line_layer_tweaker.hpp>
 
 #include <mln/gfx/context.hpp>
@@ -183,7 +184,10 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
                                              /*width =*/evaluate<LineWidth>(parameters),
                                              /*floorwidth =*/evaluate<LineFloorWidth>(parameters),
                                              LineExpressionMask::None,
-                                             0};
+                                             0,
+                                             evaluate<LineTrafficLeftColor>(parameters),
+                                             evaluate<LineTrafficMarker>(parameters),
+                                             evaluate<LineTrafficOrigin>(parameters)};
 #endif // MLN_RENDER_BACKEND_METAL
 
         context.emplaceOrUpdateUniformBuffer(evaluatedPropsUniformBuffer, &propsUBO);
@@ -191,6 +195,15 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
     }
     auto& layerUniforms = layerGroup.mutableUniformBuffers();
     layerUniforms.set(idLineEvaluatedPropsUBO, evaluatedPropsUniformBuffer);
+#if MLN_RENDER_BACKEND_OPENGL
+    if (evaluated.get<LineTrafficMarker>().constantOr(1.0f) != 0.0f) {
+        auto& data = parameters.staticData;
+        if (!data.trafficPaintBuffer) context.emplaceOrUpdateUniformBuffer(data.trafficPaintBuffer, &data.trafficPaint);
+        layerUniforms.set(idLineTrafficPaintUBO, data.trafficPaintBuffer);
+    } else {
+        layerUniforms.set(idLineTrafficPaintUBO, {});
+    }
+#endif
 
 #if MLN_RENDER_BACKEND_METAL
     // GPU Expressions
@@ -249,7 +262,11 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
                     .gapwidth_t = std::get<0>(binders->get<LineGapWidth>()->interpolationFactor(zEval)),
                     .offset_t = std::get<0>(binders->get<LineOffset>()->interpolationFactor(zEval)),
                     .width_t = std::get<0>(binders->get<LineWidth>()->interpolationFactor(zEval)),
-                    .pad1 = 0
+                    .traffic_left_color_t = std::get<0>(binders->get<LineTrafficLeftColor>()->interpolationFactor(zEval)),
+                    .traffic_marker_t = std::get<0>(binders->get<LineTrafficMarker>()->interpolationFactor(zEval)),
+                    .traffic_origin_t = std::get<0>(binders->get<LineTrafficOrigin>()->interpolationFactor(zEval)),
+                    .traffic_atlas_aspect = parameters.staticData.trafficAtlasAspect,
+                    .pad = 0.0f
                 };
 
 #if !MLN_UBO_CONSOLIDATION
@@ -269,6 +286,7 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
                         .maxGuardDistance = LineBucket::maxRoadGuardDistance,
                         .length = evaluate<LineRoadLength>(parameters),
                         .lengthT = std::get<0>(binders->get<LineRoadLength>()->interpolationFactor(zEval)),
+                        .profileRange = evaluate<LineRoadProfileRange>(parameters),
                     };
                     drawable.mutableUniformBuffers().createOrUpdate(idLineExpressionUBO, &roadUBO, context);
                 }

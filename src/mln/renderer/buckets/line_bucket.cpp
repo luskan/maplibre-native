@@ -26,6 +26,10 @@ LineBucket::LineBucket(LineBucket::PossiblyEvaluatedLayoutProperties layout_,
       zoom(zoom_),
       overscaling(overscaling_) {
     for (const auto& pair : layerPaintProperties) {
+#if MLN_RENDER_BACKEND_OPENGL
+        if (!pathDistances && getEvaluated<LineLayerProperties>(pair.second).get<LineTrafficMarker>().constantOr(1.f) != 0)
+            pathDistances = std::make_shared<gfx::VertexVector<float>>();
+#endif
         paintPropertyBinders.emplace(
             std::piecewise_construct,
             std::forward_as_tuple(pair.first),
@@ -181,6 +185,7 @@ void LineBucket::addGeometry(const GeometryCoordinates& coordinates,
         triangles);
 
     gfx::PolylineGeneratorOptions options;
+    options.pathDistances = pathDistances.get();
 
     options.type = feature.getType();
     const std::size_t len = [&coordinates] {
@@ -279,13 +284,11 @@ float LineBucket::getQueryRadius(const RenderLayer& layer) const {
 void LineBucket::update(const FeatureStates& states,
                         const GeometryTileLayer& layer,
                         const std::string& layerID,
-                        const ImagePositions& imagePositions) {
+                        const ImagePositions& imagePositions,
+                        FeatureStateUpdate update) {
     auto it = paintPropertyBinders.find(layerID);
-    if (it != paintPropertyBinders.end()) {
-        it->second.updateVertexVectors(states, layer, imagePositions);
+    if (it != paintPropertyBinders.end() && it->second.updateVertexVectors(states, layer, imagePositions, update)) {
         uploaded = false;
-
-        sharedVertices->updateModified();
     }
 }
 

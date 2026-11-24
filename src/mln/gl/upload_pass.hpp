@@ -57,6 +57,7 @@ public:
         /*out*/ std::vector<std::unique_ptr<gfx::VertexBufferResource>>& outBuffers) override;
 
 private:
+    void updateVertexBufferRange(gfx::VertexBufferResource&, const void* data, std::size_t offset, std::size_t size);
     gl::CommandEncoder& commandEncoder;
     const gfx::DebugGroup<gfx::CommandEncoder> debugGroup;
 };

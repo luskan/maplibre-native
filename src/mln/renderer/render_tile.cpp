@@ -141,8 +141,12 @@ void RenderTile::prepare(const SourcePrepareParameters& parameters) {
     matrix::multiply(nearClippedMatrix, transform.nearClippedProjMatrix, nearClippedMatrix);
 }
 
-void RenderTile::setFeatureState(const LayerFeatureStates& states) {
-    tile.setFeatureState(states);
+void RenderTile::setFeatureState(const LayerFeatureStates& states, FeatureStateUpdate update) {
+    tile.setFeatureState(states, update);
+}
+
+uint64_t& RenderTile::featureStateVersion() {
+    return tile.featureStateVersion;
 }
 
 } // namespace mln

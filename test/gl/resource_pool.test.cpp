@@ -7,6 +7,9 @@
 #include <mln/gfx/types.hpp>
 #include <mln/gl/headless_backend.hpp>
 #include <mln/gl/context.hpp>
+#include <mln/gl/defines.hpp>
+#include <mln/gl/texture2d.hpp>
+#include <mln/platform/gl_functions.hpp>
 
 using namespace mln;
 
@@ -19,6 +22,38 @@ constexpr gl::Texture2DDesc makeDescOneMB() {
 }
 
 } // namespace
+
+TEST(ResourcePool, MipmappedAtlasUsesTrilinearMinification) {
+    gl::HeadlessBackend backend{{32, 32}};
+    gfx::BackendScope scope{backend};
+    gl::Context context{backend};
+    gl::Texture2D texture(context);
+    texture.setSamplerConfiguration({.filter = gfx::TextureFilterType::Linear, .mipmapped = true});
+    std::array<uint8_t, 3 * 4 * 4> pixels{};
+    texture.upload(pixels.data(), {3, 4});
+    platform::GLint filter = 0;
+    platform::glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &filter);
+    EXPECT_EQ(GL_LINEAR_MIPMAP_LINEAR, filter);
+    platform::glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &filter);
+    EXPECT_EQ(GL_LINEAR, filter);
+    EXPECT_EQ(GL_NO_ERROR, platform::glGetError());
+}
+
+TEST(ResourcePool, FailedAllocationLeavesThePoolAndTextureCountUnchanged) {
+    gl::HeadlessBackend backend{{32, 32}};
+    gfx::BackendScope scope{backend};
+    gl::Context context{backend};
+    platform::GLint limit = 0;
+    platform::glGetIntegerv(GL_MAX_TEXTURE_SIZE, &limit);
+    ASSERT_GT(limit, 0);
+    const auto count = context.renderingStats().numActiveTextures;
+    const auto bytes = context.getTexturePool().storage();
+    EXPECT_THROW(context.createUniqueTexture({static_cast<uint32_t>(limit) + 1, 1},
+                                             gfx::TexturePixelType::RGBA, gfx::TextureChannelDataType::UnsignedByte),
+                 std::bad_alloc);
+    EXPECT_EQ(count, context.renderingStats().numActiveTextures);
+    EXPECT_EQ(bytes, context.getTexturePool().storage());
+}
 
 TEST(ResourcePool, TexturePool) {
     gl::HeadlessBackend backend{{32, 32}};

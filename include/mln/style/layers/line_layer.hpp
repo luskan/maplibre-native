@@ -122,6 +122,30 @@ public:
     void setLineRoadLengthTransition(const TransitionOptions&);
     TransitionOptions getLineRoadLengthTransition() const;
 
+    static PropertyValue<float> getDefaultLineRoadProfileRange();
+    const PropertyValue<float>& getLineRoadProfileRange() const;
+    void setLineRoadProfileRange(const PropertyValue<float>&);
+    void setLineRoadProfileRangeTransition(const TransitionOptions&);
+    TransitionOptions getLineRoadProfileRangeTransition() const;
+
+    static PropertyValue<Color> getDefaultLineTrafficLeftColor();
+    const PropertyValue<Color>& getLineTrafficLeftColor() const;
+    void setLineTrafficLeftColor(const PropertyValue<Color>&);
+    void setLineTrafficLeftColorTransition(const TransitionOptions&);
+    TransitionOptions getLineTrafficLeftColorTransition() const;
+
+    static PropertyValue<float> getDefaultLineTrafficMarker();
+    const PropertyValue<float>& getLineTrafficMarker() const;
+    void setLineTrafficMarker(const PropertyValue<float>&);
+    void setLineTrafficMarkerTransition(const TransitionOptions&);
+    TransitionOptions getLineTrafficMarkerTransition() const;
+
+    static PropertyValue<float> getDefaultLineTrafficOrigin();
+    const PropertyValue<float>& getLineTrafficOrigin() const;
+    void setLineTrafficOrigin(const PropertyValue<float>&);
+    void setLineTrafficOriginTransition(const TransitionOptions&);
+    TransitionOptions getLineTrafficOriginTransition() const;
+
     static PropertyValue<std::array<float, 2>> getDefaultLineTranslate();
     const PropertyValue<std::array<float, 2>>& getLineTranslate() const;
     void setLineTranslate(const PropertyValue<std::array<float, 2>>&);

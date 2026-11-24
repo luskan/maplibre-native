@@ -1,3 +1,4 @@
+#include <mln/style/custom_tile_conversion.hpp>
 #include <mln/style/native_tile_composer.hpp>
 
 #include <mapbox/geojsonvt/convert.hpp>
@@ -22,7 +23,7 @@ public:
   FinalGeometry(NativeTileBuilder& builder, const NativeTileMetadata& metadata, GeoJSONFeature& feature)
     : builder_(builder), metadata_(metadata), feature_(feature),
       scale_(std::ldexp(1.0, metadata.tileID.z)),
-      tolerance_(metadata.conversion.normalizedTolerance(metadata.tileID.z)),
+      tolerance_(style::retainShortTileLine(feature) ? 0.0 : metadata.conversion.normalizedTolerance(metadata.tileID.z)),
       squaredTolerance_(tolerance_ * tolerance_)
   {
   }
@@ -54,7 +55,8 @@ public:
   void operator()(const vt::vt_line_string& line)
   {
     if (!(line.dist > tolerance_)) return;
-    auto coordinates = simplify(line);
+    const auto profile = takeRoadProfile(line.size());
+    auto coordinates = profile ? roadProfile(line, *profile) : simplify(line);
     if (coordinates.empty()) return;
     GeometryCollection geometry;
     geometry.push_back(std::move(coordinates));
@@ -138,6 +140,51 @@ private:
     return coordinates;
   }
 
+  struct RoadProfileVertices {
+    std::size_t first;
+    std::size_t last;
+    bool reversed;
+  };
+
+  std::optional<RoadProfileVertices> takeRoadProfile(std::size_t points)
+  {
+    const auto vertexRange = feature_.properties.find("__automapa_mvt_crossing_profile_vertices");
+    if (vertexRange == feature_.properties.end() || !feature_.properties.contains("xr")) return std::nullopt;
+    if (!vertexRange->second.is<int64_t>()) return std::nullopt;
+    const auto range = vertexRange->second.get<int64_t>();
+    const bool reversed = range < 0;
+    const uint64_t packed = reversed ? static_cast<uint64_t>(-(range + 1)) : static_cast<uint64_t>(range);
+    const auto first = packed >> 32;
+    const auto last = packed & 0xffffffffu;
+    if (first >= last || last >= points) return std::nullopt;
+    feature_.properties.erase(vertexRange);
+    return RoadProfileVertices{static_cast<std::size_t>(first), static_cast<std::size_t>(last), reversed};
+  }
+
+  GeometryCoordinates roadProfile(const vt::vt_line_string& line, const RoadProfileVertices& range)
+  {
+    // All copies of the same profile retain the junction vertices and the same path.
+    GeometryCoordinates coordinates;
+    coordinates.reserve(line.size());
+    double distance = 0, start = 0, end = 0;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+      const auto point = quantize(line[i]);
+      if (!coordinates.empty()) {
+        const auto& previous = coordinates.back();
+        distance += std::hypot(double(point.x) - previous.x, double(point.y) - previous.y);
+      }
+      coordinates.push_back(point);
+      if (i == range.first) start = std::floor(distance * 0.5);
+      if (i == range.last) end = std::floor(distance * 0.5);
+    }
+    const auto length = std::floor(distance * 0.5);
+    if (length > 0) {
+      const int64_t bounds = std::lround(start / length * 2047) * 2048 + std::lround(end / length * 2047);
+      feature_.properties["xt"] = range.reversed ? -1 - bounds : bounds;
+    }
+    return coordinates;
+  }
+
   GeometryCollection rings(const vt::vt_polygon& polygon) const
   {
     GeometryCollection geometry;
@@ -203,7 +250,7 @@ void NativeGeometryComposer::append(GeoJSONFeature&& feature)
         throw std::invalid_argument("Native composer requires finite geographic coordinates");
       }
     });
-    auto projected = vt::project{metadata_.conversion.normalizedTolerance(metadata_.tileID.z)}(feature.geometry);
+    auto projected = vt::project{style::retainShortTileLine(feature) ? 0.0 : metadata_.conversion.normalizedTolerance(metadata_.tileID.z)}(feature.geometry);
     mapbox::geometry::for_each_point(projected, [](const auto& point)
     {
       if (!std::isfinite(point.x) || !std::isfinite(point.y))

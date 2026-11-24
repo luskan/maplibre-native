@@ -44,8 +44,12 @@ struct data {
 
 MBGL_DEFINE_ATTRIBUTE(float, 2, color);
 MBGL_DEFINE_ATTRIBUTE(float, 2, road_casing_color);
+MBGL_DEFINE_ATTRIBUTE(float, 2, traffic_left_color);
 MBGL_DEFINE_ATTRIBUTE(float, 1, road_fill_width);
 MBGL_DEFINE_ATTRIBUTE(float, 1, road_length);
+MBGL_DEFINE_ATTRIBUTE(float, 1, road_profile_range);
+MBGL_DEFINE_ATTRIBUTE(float, 1, traffic_marker);
+MBGL_DEFINE_ATTRIBUTE(float, 1, traffic_origin);
 MBGL_DEFINE_ATTRIBUTE(float, 2, fill_color);
 MBGL_DEFINE_ATTRIBUTE(float, 2, halo_color);
 MBGL_DEFINE_ATTRIBUTE(float, 2, stroke_color);

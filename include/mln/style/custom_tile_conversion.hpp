@@ -2,6 +2,7 @@
 
 #include <mln/style/sources/custom_geometry_source.hpp>
 #include <mln/util/geometry.hpp>
+#include <mln/util/geojson.hpp>
 
 #include <cstdint>
 #include <vector>
@@ -21,6 +22,13 @@ struct CustomTileConversionSpec {
     /// What a ring area is compared against, geojson-vt keeps a ring above it.
     double squaredNormalizedTolerance = 0.0;
 };
+
+// An identified pre-clipped road may occupy less than the usual line tolerance and still have distinct tile coordinates.
+inline bool retainShortTileLine(const GeoJSONFeature& feature) {
+    const auto flag = feature.properties.find("__automapa_retain_short_line");
+    return feature.geometry.is<mapbox::geometry::line_string<double>>() && flag != feature.properties.end()
+        && flag->second.is<bool>() && flag->second.get<bool>();
+}
 
 /// z is the canonical tile zoom that geojson-vt is given.
 CustomTileConversionSpec customTileConversionSpec(const CustomGeometrySource::TileOptions& options, uint8_t z);

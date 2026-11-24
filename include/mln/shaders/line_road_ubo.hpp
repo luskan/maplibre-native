@@ -17,7 +17,7 @@ struct alignas(16) LineRoadPropsUBO
   float maxGuardDistance;
   float length = 0;
   float lengthT = 0;
-  float pad3 = 0;
+  float profileRange = 2047;
 };
 static_assert(sizeof(LineRoadPropsUBO) == 64);
 

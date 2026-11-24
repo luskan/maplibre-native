@@ -98,24 +98,25 @@ Texture2DPool::~Texture2DPool() {
 TextureID Texture2DPool::alloc(const Texture2DDesc& desc) {
     MLN_TRACE_FUNC();
 
-    context->renderingStats().numActiveTextures++;
-
     // Check if the texture is already allocated
     auto set_it = pool.find(desc);
     if (set_it != pool.end() && !set_it->second.free.empty()) {
         // Reuse an existing texture
         TextureID id = *set_it->second.free.begin();
-        set_it->second.free.erase(id);
         set_it->second.used.insert(id);
+        set_it->second.free.erase(id);
         assert(lru_cache.isHit(id));
         lru_cache.remove(id);
         ++reuseCount;
+        ++context->renderingStats().numActiveTextures;
         return id;
     }
 
     // Allocate a new texture
+    const auto id = allocateGLMemory(desc);
     ++allocCount;
-    return allocateGLMemory(desc);
+    ++context->renderingStats().numActiveTextures;
+    return id;
 }
 
 void Texture2DPool::release(TextureID id) {
@@ -139,33 +140,34 @@ TextureID Texture2DPool::allocateGLMemory(const Texture2DDesc& desc) {
     // Create handle
     TextureID id = 0;
     MBGL_CHECK_ERROR(glGenTextures(1, &id));
-    assert(id != 0);
+    if (!id) throw std::bad_alloc();
 
     // Allocate memory
     // Bind to TU 0 and upload
     context->activeTextureUnit = 0;
     context->texture[0] = id;
-    MBGL_CHECK_ERROR(glTexImage2D(GL_TEXTURE_2D,
-                                  0,
-                                  Enum<gfx::TexturePixelType>::sizedFor(desc.pixelFormat, desc.channelType),
-                                  desc.size.width,
-                                  desc.size.height,
-                                  0,
-                                  Enum<gfx::TexturePixelType>::to(desc.pixelFormat),
-                                  Enum<gfx::TextureChannelDataType>::to(desc.channelType),
-                                  nullptr));
-    if (glGetError()) {
-        throw std::bad_alloc();
+    glTexImage2D(GL_TEXTURE_2D,
+                 0,
+                 Enum<gfx::TexturePixelType>::sizedFor(desc.pixelFormat, desc.channelType),
+                 desc.size.width,
+                 desc.size.height,
+                 0,
+                 Enum<gfx::TexturePixelType>::to(desc.pixelFormat),
+                 Enum<gfx::TextureChannelDataType>::to(desc.channelType),
+                 nullptr);
+    try {
+        if (glGetError()) throw std::bad_alloc();
+        descriptions.emplace(id, desc);
+        pool[desc].used.insert(id);
+    } catch (...) {
+        descriptions.erase(id);
+        auto it = pool.find(desc);
+        if (it != pool.end() && it->second.used.empty() && it->second.free.empty()) pool.erase(it);
+        context->texture[0] = 0;
+        glDeleteTextures(1, &id);
+        throw;
     }
-
-    // Update stats
-    context->renderingStats().numCreatedTextures++;
-
-    // Add to descriptions
-    descriptions.emplace(id, desc);
-
-    // Add to pool
-    pool[desc].used.insert(id);
+    ++context->renderingStats().numCreatedTextures;
 
     // Update poolStorage
     auto storage = desc.getStorageSize();

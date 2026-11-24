@@ -130,7 +130,7 @@ public:
                 .gapwidth_t = 0.f,
                 .offset_t = 0.f,
                 .width_t = 0.f,
-                .pad1 = 0
+                .traffic_left_color_t = 0
             };
 
 #if MLN_UBO_CONSOLIDATION
@@ -200,7 +200,7 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
     gfx::ShaderPtr polylineShader;
     const auto createPolylineShader = [&]() -> gfx::ShaderPtr {
         gfx::ShaderGroupPtr shaderGroup = shaders.getShaderGroup("LineShader");
-        const StringIDSetsPair propertiesAsUniforms{
+        StringIDSetsPair propertiesAsUniforms{
             {"a_color", "a_blur", "a_opacity", "a_gapwidth", "a_offset", "a_width"},
             {idLineColorVertexAttribute,
              idLineBlurVertexAttribute,
@@ -208,6 +208,16 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
              idLineGapWidthVertexAttribute,
              idLineOffsetVertexAttribute,
              idLineWidthVertexAttribute}};
+#if MLN_RENDER_BACKEND_OPENGL
+        propertiesAsUniforms.first.emplace("a_traffic_left_color");
+        propertiesAsUniforms.second.emplace(idLineTrafficLeftColorVertexAttribute);
+        propertiesAsUniforms.first.emplace("a_traffic_marker");
+        propertiesAsUniforms.second.emplace(idLineTrafficMarkerVertexAttribute);
+        propertiesAsUniforms.first.emplace("a_traffic_origin");
+        propertiesAsUniforms.second.emplace(idLineTrafficOriginVertexAttribute);
+        propertiesAsUniforms.first.emplace("a_path_distance");
+        propertiesAsUniforms.second.emplace(idLinePathDistanceVertexAttribute);
+#endif
         return shaderGroup->getOrCreateShader(context, propertiesAsUniforms);
     };
 

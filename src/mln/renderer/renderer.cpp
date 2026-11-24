@@ -28,6 +28,16 @@ void Renderer::markContextLost() {
     impl->orchestrator.markContextLost();
 }
 
+void Renderer::setLineTrafficPaint(const LineTrafficPaint& paint) {
+    impl->trafficPaint = paint;
+}
+
+void Renderer::setLineTrafficAtlas(std::shared_ptr<PremultipliedImage> image, bool mipmapped) {
+    impl->trafficAtlasMipmapped = mipmapped;
+    impl->trafficAtlas = std::move(image);
+    impl->trafficAtlasChanged = true;
+}
+
 void Renderer::setObserver(RendererObserver* observer) {
     impl->setObserver(observer);
     impl->orchestrator.setObserver(observer);

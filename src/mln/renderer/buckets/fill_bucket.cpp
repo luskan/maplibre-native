@@ -94,10 +94,10 @@ float FillBucket::getQueryRadius(const RenderLayer& layer) const {
 void FillBucket::update(const FeatureStates& states,
                         const GeometryTileLayer& layer,
                         const std::string& layerID,
-                        const ImagePositions& imagePositions) {
+                        const ImagePositions& imagePositions,
+                        FeatureStateUpdate update) {
     auto it = paintPropertyBinders.find(layerID);
-    if (it != paintPropertyBinders.end()) {
-        it->second.updateVertexVectors(states, layer, imagePositions);
+    if (it != paintPropertyBinders.end() && it->second.updateVertexVectors(states, layer, imagePositions, update)) {
         uploaded = false;
 
         sharedVertices->updateModified();

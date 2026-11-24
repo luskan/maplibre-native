@@ -29,6 +29,7 @@ class SourcePrepareParameters;
 class FeatureIndex;
 class TileAtlasTextures;
 class TileRenderData;
+enum class FeatureStateUpdate;
 
 class RenderTile final {
 public:
@@ -79,7 +80,8 @@ public:
                             const TransformState& state,
                             bool inViewportPixelUnits) const;
 
-    void setFeatureState(const LayerFeatureStates&);
+    void setFeatureState(const LayerFeatureStates&, FeatureStateUpdate);
+    uint64_t& featureStateVersion();
 
 private:
     Tile& tile;

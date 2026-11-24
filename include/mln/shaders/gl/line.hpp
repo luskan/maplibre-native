@@ -18,6 +18,11 @@ struct ShaderSource<BuiltIn::LineShader, gfx::Backend::Type::OpenGL> {
 
 layout (location = 0) in vec2 a_pos_normal;
 layout (location = 1) in vec4 a_data;
+#ifndef HAS_UNIFORM_u_path_distance
+layout (location = 2) in highp float a_path_distance;
+#else
+const highp float a_path_distance = 0.0;
+#endif
 
 layout (std140) uniform GlobalPaintParamsUBO {
     highp vec2 u_pattern_atlas_texsize;
@@ -31,6 +36,15 @@ layout (std140) uniform GlobalPaintParamsUBO {
     lowp float global_pad1;
 };
 
+#ifndef HAS_UNIFORM_u_path_distance
+layout (std140) uniform LineTrafficPaintUBO {
+    highp vec4 u_traffic_widths[5];
+    highp vec4 u_traffic_scales;
+    highp vec4 u_traffic_outline;
+    highp vec4 u_traffic_insets;
+};
+#endif
+
 layout (std140) uniform LineDrawableUBO {
     highp mat4 u_matrix;
     mediump float u_ratio;
@@ -41,7 +55,11 @@ layout (std140) uniform LineDrawableUBO {
     lowp float u_gapwidth_t;
     lowp float u_offset_t;
     lowp float u_width_t;
-    lowp float drawable_pad1;
+    lowp float u_traffic_left_color_t;
+    lowp float u_traffic_marker_t;
+    lowp float u_traffic_origin_t;
+    highp float u_traffic_atlas_aspect;
+    lowp float traffic_pad;
 };
 
 layout (std140) uniform LineEvaluatedPropsUBO {
@@ -54,6 +72,9 @@ layout (std140) uniform LineEvaluatedPropsUBO {
     lowp float u_floorwidth;
     lowp float props_pad1;
     lowp float props_pad2;
+    highp vec4 u_traffic_left_color;
+    highp float u_traffic_marker;
+    highp float u_traffic_origin;
 };
 
 out vec2 v_normal;
@@ -62,28 +83,53 @@ out float v_gamma_scale;
 out highp float v_linesofar;
 
 #ifndef HAS_UNIFORM_u_color
-layout (location = 2) in highp vec4 a_color;
+layout (location = 3) in highp vec4 a_color;
 out highp vec4 color;
 #endif
 #ifndef HAS_UNIFORM_u_blur
-layout (location = 3) in lowp vec2 a_blur;
+layout (location = 4) in lowp vec2 a_blur;
 out lowp float blur;
 #endif
 #ifndef HAS_UNIFORM_u_opacity
-layout (location = 4) in lowp vec2 a_opacity;
+layout (location = 5) in lowp vec2 a_opacity;
 out lowp float opacity;
 #endif
 #ifndef HAS_UNIFORM_u_gapwidth
-layout (location = 5) in mediump vec2 a_gapwidth;
+layout (location = 6) in mediump vec2 a_gapwidth;
 #endif
 #ifndef HAS_UNIFORM_u_offset
-layout (location = 6) in lowp vec2 a_offset;
+layout (location = 7) in lowp vec2 a_offset;
 #endif
 #ifndef HAS_UNIFORM_u_width
-layout (location = 7) in mediump vec2 a_width;
+layout (location = 8) in mediump vec2 a_width;
+#endif
+#ifndef HAS_UNIFORM_u_traffic_left_color
+layout (location = 9) in highp vec4 a_traffic_left_color;
+out highp vec4 traffic_left_color;
 #endif
 
+#ifndef HAS_UNIFORM_u_traffic_marker
+layout (location = 10) in highp vec2 a_traffic_marker;
+#endif
+#ifndef HAS_UNIFORM_u_traffic_origin
+layout (location = 11) in highp vec2 a_traffic_origin;
+#endif
+flat out highp float v_marker_column;
+flat out highp vec4 v_traffic_outline;
+flat out highp vec4 v_traffic_edges;
+out highp float v_marker_phase;
+
 void main() {
+    #ifndef HAS_UNIFORM_u_traffic_marker
+highp float traffic_marker = unpack_mix_vec2(a_traffic_marker, u_traffic_marker_t);
+#else
+highp float traffic_marker = u_traffic_marker;
+#endif
+    #ifndef HAS_UNIFORM_u_traffic_origin
+highp float traffic_origin = unpack_mix_vec2(a_traffic_origin, u_traffic_origin_t);
+#else
+highp float traffic_origin = u_traffic_origin;
+#endif
     #ifndef HAS_UNIFORM_u_color
 color = unpack_mix_color(a_color, u_color_t);
 #else
@@ -114,6 +160,11 @@ mediump float width = unpack_mix_vec2(a_width, u_width_t);
 #else
 mediump float width = u_width;
 #endif
+    #ifndef HAS_UNIFORM_u_traffic_left_color
+traffic_left_color = unpack_mix_color(a_traffic_left_color, u_traffic_left_color_t);
+#else
+highp vec4 traffic_left_color = u_traffic_left_color;
+#endif
 
     // the distance over which the line edge fades out.
     // Retina devices need a smaller distance to avoid aliasing.
@@ -136,6 +187,25 @@ mediump float width = u_width;
     // these transformations used to be applied in the JS and native code bases.
     // moved them into the shader for clarity and simplicity.
     gapwidth = gapwidth / 2.0;
+#ifndef HAS_UNIFORM_u_path_distance
+    int code = int(abs(traffic_marker) + 0.5);
+    int slot = max(code - 1, 0) % 8;
+    int category = clamp((max(code - 1, 0) / 16), 0, 19);
+    bool speedProfile = code > 0 && u_traffic_scales.z > 0.0;
+    highp float pathDistance = a_path_distance < 0.0 ? -1.0 - a_path_distance : a_path_distance;
+    if (speedProfile && a_path_distance < 0.0) v_normal.x = -normal.x;
+    if (speedProfile) {
+        width = traffic_marker > 0.0 ? u_traffic_widths[category / 4][category % 4]
+            * (slot >= 4 ? u_traffic_scales.y : u_traffic_scales.x) : 0.0;
+    }
+    bool split = ((max(code - 1, 0) / 8) % 2) != 0;
+    v_traffic_edges = vec4(speedProfile ? 1.0 : 0.0,
+        split ? u_traffic_insets.y : u_traffic_insets.x, split ? u_traffic_insets.z : -1.0, u_traffic_insets.w);
+    v_traffic_outline = u_traffic_outline;
+#else
+    v_traffic_edges = vec4(0.0);
+    v_traffic_outline = vec4(0.0);
+#endif
     float halfwidth = width / 2.0;
     offset = -1.0 * offset;
 
@@ -162,6 +232,15 @@ mediump float width = u_width;
     float extrude_length_with_perspective = length(projected_extrude.xy / gl_Position.w * u_units_to_pixels);
     v_gamma_scale = extrude_length_without_perspective / extrude_length_with_perspective;
 
+#if !defined(HAS_UNIFORM_u_path_distance) && !defined(HAS_UNIFORM_u_no_traffic_atlas)
+    v_marker_column = u_traffic_atlas_aspect > 0.0 && traffic_marker > 0.0 ? float(slot + 1) : 0.0;
+    highp float width_for_marker = max(width, 0.01);
+    highp float period = max(width_for_marker * u_traffic_atlas_aspect, 0.01);
+    v_marker_phase = (traffic_origin + pathDistance) * u_ratio / period;
+#else
+    v_marker_column = 0.0;
+    v_marker_phase = 0.0;
+#endif
     v_width2 = vec2(outset, inset);
 }
 )";
@@ -175,6 +254,9 @@ mediump float width = u_width;
     lowp float u_floorwidth;
     lowp float props_pad1;
     lowp float props_pad2;
+    highp vec4 u_traffic_left_color;
+    highp float u_traffic_marker;
+    highp float u_traffic_origin;
 };
 
 in vec2 v_width2;
@@ -184,6 +266,9 @@ in float v_gamma_scale;
 #ifndef HAS_UNIFORM_u_color
 in highp vec4 color;
 #endif
+#ifndef HAS_UNIFORM_u_traffic_left_color
+in highp vec4 traffic_left_color;
+#endif
 #ifndef HAS_UNIFORM_u_blur
 in lowp float blur;
 #endif
@@ -191,9 +276,20 @@ in lowp float blur;
 in lowp float opacity;
 #endif
 
+#if !defined(HAS_UNIFORM_u_path_distance) && !defined(HAS_UNIFORM_u_no_traffic_atlas)
+uniform highp sampler2D u_traffic_atlas;
+#endif
+flat in highp float v_marker_column;
+flat in highp vec4 v_traffic_outline;
+flat in highp vec4 v_traffic_edges;
+in highp float v_marker_phase;
+
 void main() {
     #ifdef HAS_UNIFORM_u_color
 highp vec4 color = u_color;
+#endif
+    #ifdef HAS_UNIFORM_u_traffic_left_color
+highp vec4 traffic_left_color = u_traffic_left_color;
 #endif
     #ifdef HAS_UNIFORM_u_blur
 lowp float blur = u_blur;
@@ -203,6 +299,7 @@ lowp float opacity = u_opacity;
 #endif
 
     // Calculate the distance of the pixel from the line in pixels.
+    if (v_normal.x < 0.0) discard;
     float dist = length(v_normal) * v_width2.s;
 
     // Calculate the antialiasing fade factor. This is either when fading in
@@ -211,7 +308,29 @@ lowp float opacity = u_opacity;
     float blur2 = (blur + 1.0 / DEVICE_PIXEL_RATIO) * v_gamma_scale;
     float alpha = clamp(min(dist - (v_width2.t - blur2), v_width2.s - dist) / blur2, 0.0, 1.0);
 
-    fragColor = color * (alpha * opacity);
+    vec4 side_color = (v_normal.y > 0.0 && traffic_left_color.a > 0.0) ? traffic_left_color : color;
+#ifndef HAS_UNIFORM_u_path_distance
+    if (v_traffic_edges.x > 0.5) {
+        if (v_traffic_edges.z == 0.0 && traffic_left_color.a > 0.0)
+            side_color = mix(color, traffic_left_color, clamp(0.5 + v_normal.y * 0.5 * v_traffic_edges.w, 0.0, 1.0));
+        highp float transverse = abs(v_normal.y);
+        // Blend adjacent base texture texels at their original positions across the road.
+        highp float paint = v_traffic_edges.y > 0.0
+            ? clamp(0.5 + ((1.0 - transverse) * 0.5 - v_traffic_edges.y) * v_traffic_edges.w, 0.0, 1.0) : 1.0;
+        if (v_traffic_edges.z > 0.0)
+            paint = min(paint, clamp(0.5 + (transverse * 0.5 - v_traffic_edges.z) * v_traffic_edges.w, 0.0, 1.0));
+        side_color = mix(v_traffic_outline, side_color, paint);
+    }
+#endif
+#if !defined(HAS_UNIFORM_u_path_distance) && !defined(HAS_UNIFORM_u_no_traffic_atlas)
+    if (v_marker_column >= 1.0 && v_marker_column <= 8.0) {
+        highp float across = clamp(v_normal.y * 0.5 + 0.5, 0.001, 0.999);
+        highp float phase = v_marker_phase;
+        vec4 mark = texture(u_traffic_atlas, vec2((v_marker_column - 1.0 + across) / 8.0, phase));
+        side_color = mark + side_color * (1.0 - mark.a);
+    }
+#endif
+    fragColor = side_color * (alpha * opacity);
 
 #ifdef OVERDRAW_INSPECTOR
     fragColor = vec4(1.0);
