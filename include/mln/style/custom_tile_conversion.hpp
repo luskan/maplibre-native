@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <mln/style/sources/custom_geometry_source.hpp>
 #include <mln/util/geometry.hpp>
 #include <mln/util/geojson.hpp>
@@ -25,8 +27,10 @@ struct CustomTileConversionSpec {
 
 // An identified pre-clipped road may occupy less than the usual line tolerance and still have distinct tile coordinates.
 inline bool retainShortTileLine(const GeoJSONFeature& feature) {
-    const auto flag = feature.properties.find("__automapa_retain_short_line");
-    return feature.geometry.is<mapbox::geometry::line_string<double>>() && flag != feature.properties.end()
+    if (!feature.geometry.is<mapbox::geometry::line_string<double>>()) return false;
+    static const std::string key = "__automapa_retain_short_line";
+    const auto flag = feature.properties.find(key);
+    return flag != feature.properties.end()
         && flag->second.is<bool>() && flag->second.get<bool>();
 }
 

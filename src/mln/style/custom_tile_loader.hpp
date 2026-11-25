@@ -67,7 +67,8 @@ public:
                    RegistrationToken token);
     void fetchTracedTile(const OverscaledTileID&, const ActorRef<CustomGeometryTile>&,
                          RegistrationToken, tiletrace::Context);
-    void setTracedTileFeatures(const CanonicalTileID&, std::shared_ptr<const FeatureCollection>, tiletrace::Context);
+    void setTracedTileFeatures(const CanonicalTileID&, std::shared_ptr<const FeatureCollection>, tiletrace::Context,
+                              bool inspectRoadMetadata = true);
     void setTracedTilePayload(const CanonicalTileID&, NativeRequestTicket, NativeTilePayloadPtr, tiletrace::Context,
                              uint64_t cacheGeneration = 0);
     void setNativeTileError(const CanonicalTileID&, NativeRequestTicket, std::exception_ptr, tiletrace::Context);

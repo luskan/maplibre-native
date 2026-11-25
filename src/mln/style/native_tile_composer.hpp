@@ -11,6 +11,8 @@ class NativeGeometryComposer
 {
 public:
   explicit NativeGeometryComposer(NativeTileMetadata);
+  // Producers of ordinary roads can skip the lookup of traffic-specific properties.
+  NativeGeometryComposer(NativeTileMetadata, bool inspectRoadMetadata);
 
   // Properties and IDs are moved into final records, so mutable aliases must be relinquished.
   void append(GeoJSONFeature&&);
@@ -22,6 +24,7 @@ private:
   const NativeTileMetadata metadata_;
   NativeTileBuilder builder_;
   bool closed_ = false;
+  const bool inspectRoadMetadata_;
 };
 
 } // namespace mln

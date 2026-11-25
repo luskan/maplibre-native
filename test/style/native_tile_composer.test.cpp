@@ -188,6 +188,20 @@ TEST(NativeGeometryComposer, RetainsSelectedShortRoadsBetweenOrdinaryFeatures)
   EXPECT_EQ(FeatureIdentifier(uint64_t{4}), payload->features()[2].id);
 }
 
+TEST(NativeGeometryComposer, PlainTilesSkipTrafficMetadataInBothConverters)
+{
+  auto opts = options();
+  FeatureCollection roads;
+  roads.emplace_back(line({{0, 0}, {2, 0}}));
+  roads.back().properties["__automapa_retain_short_line"] = true;
+  ASSERT_EQ(1u, compose(roads)->features().size());
+  ASSERT_EQ(1u, CustomGeometryTile::processTileData(roads, tile, opts)->size());
+  NativeGeometryComposer plain({tile, nativeTileConversionContract(opts)}, false);
+  plain.append(GeoJSONFeature(roads.front()));
+  EXPECT_EQ(0u, std::move(plain).seal()->features().size());
+  EXPECT_TRUE(CustomGeometryTile::processTileData(roads, tile, opts, false)->empty());
+}
+
 TEST(NativeGeometryComposer, StrictToleranceAndDuplicateVertices)
 {
   FeatureCollection features;

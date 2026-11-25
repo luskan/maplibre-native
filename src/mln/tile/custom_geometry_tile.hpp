@@ -36,6 +36,9 @@ public:
     static TileFeatureCollectionPtr processTileData(const FeatureCollection&,
                                                     const CanonicalTileID&,
                                                     const style::CustomGeometrySource::TileOptions&);
+    static TileFeatureCollectionPtr processTileData(const FeatureCollection&,
+                                                    const CanonicalTileID&,
+                                                    const style::CustomGeometrySource::TileOptions&, bool inspectRoadMetadata);
 
     void setTileData(const GeoJSON& geoJSON);
     void setTileData(TileFeatureCollectionPtr featureData);

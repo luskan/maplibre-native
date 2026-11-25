@@ -80,6 +80,9 @@ public:
     void setTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&);
     void setTracedTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&,
                               tiletrace::Context);
+    // Producers of ordinary roads can skip the lookup of traffic-specific properties.
+    void setTracedTileFeatures(const CanonicalTileID&, const std::shared_ptr<const FeatureCollection>&,
+                              tiletrace::Context, bool inspectRoadMetadata);
     void setTracedTilePayload(const CanonicalTileID&, const NativeRequestTicket&,
                              std::shared_ptr<const NativeTilePayload>, tiletrace::Context = {}, uint64_t cacheGeneration = 0);
     void setNativeTileError(const CanonicalTileID&, const NativeRequestTicket&,

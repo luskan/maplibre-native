@@ -20,10 +20,11 @@ namespace vt = mapbox::geojsonvt::detail;
 class FinalGeometry
 {
 public:
-  FinalGeometry(NativeTileBuilder& builder, const NativeTileMetadata& metadata, GeoJSONFeature& feature)
+  FinalGeometry(NativeTileBuilder& builder, const NativeTileMetadata& metadata, GeoJSONFeature& feature,
+                double tolerance, bool inspectRoadMetadata)
     : builder_(builder), metadata_(metadata), feature_(feature),
       scale_(std::ldexp(1.0, metadata.tileID.z)),
-      tolerance_(style::retainShortTileLine(feature) ? 0.0 : metadata.conversion.normalizedTolerance(metadata.tileID.z)),
+      inspectRoadMetadata_(inspectRoadMetadata), tolerance_(tolerance),
       squaredTolerance_(tolerance_ * tolerance_)
   {
   }
@@ -148,8 +149,10 @@ private:
 
   std::optional<RoadProfileVertices> takeRoadProfile(std::size_t points)
   {
-    const auto vertexRange = feature_.properties.find("__automapa_mvt_crossing_profile_vertices");
-    if (vertexRange == feature_.properties.end() || !feature_.properties.contains("xr")) return std::nullopt;
+    if (!inspectRoadMetadata_ || !feature_.properties.contains("xr")) return std::nullopt;
+    static const std::string key = "__automapa_mvt_crossing_profile_vertices";
+    const auto vertexRange = feature_.properties.find(key);
+    if (vertexRange == feature_.properties.end()) return std::nullopt;
     if (!vertexRange->second.is<int64_t>()) return std::nullopt;
     const auto range = vertexRange->second.get<int64_t>();
     const bool reversed = range < 0;
@@ -217,6 +220,7 @@ private:
   const NativeTileMetadata& metadata_;
   GeoJSONFeature& feature_;
   const double scale_;
+  const bool inspectRoadMetadata_;
   const double tolerance_;
   const double squaredTolerance_;
   std::optional<Pending> pending_;
@@ -225,7 +229,10 @@ private:
 } // namespace
 
 NativeGeometryComposer::NativeGeometryComposer(NativeTileMetadata metadata)
-  : metadata_(std::move(metadata)), builder_(metadata_)
+  : NativeGeometryComposer(std::move(metadata), true) {}
+
+NativeGeometryComposer::NativeGeometryComposer(NativeTileMetadata metadata, bool inspectRoadMetadata)
+  : metadata_(std::move(metadata)), builder_(metadata_), inspectRoadMetadata_(inspectRoadMetadata)
 {
   if (metadata_.conversion.clip || metadata_.conversion.wrap)
   {
@@ -250,7 +257,9 @@ void NativeGeometryComposer::append(GeoJSONFeature&& feature)
         throw std::invalid_argument("Native composer requires finite geographic coordinates");
       }
     });
-    auto projected = vt::project{style::retainShortTileLine(feature) ? 0.0 : metadata_.conversion.normalizedTolerance(metadata_.tileID.z)}(feature.geometry);
+    const double tolerance = inspectRoadMetadata_ && style::retainShortTileLine(feature)
+        ? 0.0 : metadata_.conversion.normalizedTolerance(metadata_.tileID.z);
+    auto projected = vt::project{tolerance}(feature.geometry);
     mapbox::geometry::for_each_point(projected, [](const auto& point)
     {
       if (!std::isfinite(point.x) || !std::isfinite(point.y))
@@ -258,7 +267,7 @@ void NativeGeometryComposer::append(GeoJSONFeature&& feature)
         throw std::out_of_range("Native projected coordinate is not finite");
       }
     });
-    FinalGeometry final(builder_, metadata_, feature);
+    FinalGeometry final(builder_, metadata_, feature, tolerance, inspectRoadMetadata_);
     vt::vt_geometry::visit(projected, [&final](const auto& value) { final(value); });
     final.finish();
   }

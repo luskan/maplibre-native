@@ -504,7 +504,7 @@ void CustomTileLoader::setTileFeatures(const CanonicalTileID& tileID, std::share
 }
 
 void CustomTileLoader::setTracedTileFeatures(const CanonicalTileID& tileID,
-    std::shared_ptr<const FeatureCollection> data, tiletrace::Context trace) {
+    std::shared_ptr<const FeatureCollection> data, tiletrace::Context trace, bool inspectRoadMetadata) {
     if (nativeState) { tiletrace::finish(trace, tiletrace::Outcome::StaleDrain); return; }
     trace.payloadFormat = tiletrace::PayloadFormat::LegacyFeatures;
     tiletrace::mark(trace, tiletrace::Loader);
@@ -525,7 +525,7 @@ void CustomTileLoader::setTracedTileFeatures(const CanonicalTileID& tileID,
 
     TileFeatureCollectionPtr featureData;
     try {
-        featureData = data ? CustomGeometryTile::processTileData(*data, tileID, tileOptions)
+        featureData = data ? CustomGeometryTile::processTileData(*data, tileID, tileOptions, inspectRoadMetadata)
                            : std::make_shared<const TileFeatureCollection>();
     } catch (...) {
         tiletrace::finish(trace, tiletrace::Outcome::Error);

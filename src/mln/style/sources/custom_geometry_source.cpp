@@ -77,10 +77,15 @@ void CustomGeometrySource::setTileFeatures(const CanonicalTileID& tileID,
 
 void CustomGeometrySource::setTracedTileFeatures(const CanonicalTileID& tileID,
     const std::shared_ptr<const FeatureCollection>& data, tiletrace::Context trace) {
+    setTracedTileFeatures(tileID, data, trace, true);
+}
+
+void CustomGeometrySource::setTracedTileFeatures(const CanonicalTileID& tileID,
+    const std::shared_ptr<const FeatureCollection>& data, tiletrace::Context trace, bool inspectRoadMetadata) {
     if (nativeState) { tiletrace::finish(trace, tiletrace::Outcome::StaleSubmit); return; }
     trace.payloadFormat = tiletrace::PayloadFormat::LegacyFeatures;
     tiletrace::mark(trace, tiletrace::Dispatched);
-    loader->self().invoke(&CustomTileLoader::setTracedTileFeatures, tileID, data, trace);
+    loader->self().invoke(&CustomTileLoader::setTracedTileFeatures, tileID, data, trace, inspectRoadMetadata);
 }
 
 void CustomGeometrySource::setTracedTilePayload(const CanonicalTileID& tileID, const NativeRequestTicket& ticket,

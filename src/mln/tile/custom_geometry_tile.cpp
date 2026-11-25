@@ -83,11 +83,18 @@ CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData
     const FeatureCollection& features,
     const CanonicalTileID& tileID,
     const style::CustomGeometrySource::TileOptions& tileOptions) {
+    return processTileData(features, tileID, tileOptions, true);
+}
+
+CustomGeometryTile::TileFeatureCollectionPtr CustomGeometryTile::processTileData(
+    const FeatureCollection& features,
+    const CanonicalTileID& tileID,
+    const style::CustomGeometrySource::TileOptions& tileOptions, bool inspectRoadMetadata) {
     if (features.empty()) {
         return std::make_shared<const TileFeatureCollection>();
     }
 
-    if (!tileOptions.wrap && !tileOptions.clip && std::ranges::any_of(features, style::retainShortTileLine)) {
+    if (inspectRoadMetadata && !tileOptions.wrap && !tileOptions.clip && std::ranges::any_of(features, style::retainShortTileLine)) {
         const auto spec = style::customTileConversionSpec(tileOptions, tileID.z);
         auto result = std::make_shared<TileFeatureCollection>();
         result->reserve(features.size());
